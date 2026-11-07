@@ -1,0 +1,51 @@
+export const Ipc = {
+  bootstrap: 'bootstrap:get',
+  panelHide: 'panel:hide',
+  panelCurrent: 'panel:current',
+  settingsUpdate: 'settings:update',
+  settingsOpen: 'settings:open',
+  secretSet: 'secret:set',
+  secretClear: 'secret:clear',
+  copyText: 'clipboard:write',
+  aiRun: 'ai:run',
+  aiCancel: 'ai:cancel',
+  aiDelta: 'ai:delta',
+  actionApply: 'action:apply',
+  captureOcr: 'capture:ocr',
+  fetchPage: 'context:fetch-page',
+  historyList: 'history:list',
+  historyDelete: 'history:delete',
+  permissionsPrompt: 'permissions:prompt',
+  permissionsOpen: 'permissions:open',
+  permissionsRefresh: 'permissions:refresh',
+  shortcutSet: 'shortcut:set',
+  tokenRotate: 'integrations:rotate-token',
+  themeChanged: 'theme:changed',
+  integrationsChanged: 'integrations:changed',
+  panelOpen: 'panel:open'
+} as const
+
+export type IpcChannel = (typeof Ipc)[keyof typeof Ipc]
+
+export const ALLOWED_INVOKE = new Set<string>([
+  Ipc.bootstrap,
+  Ipc.panelHide,
+  Ipc.panelCurrent,
+  Ipc.settingsUpdate,
+  Ipc.settingsOpen,
+  Ipc.secretSet,
+  Ipc.secretClear,
+  Ipc.copyText,
+  Ipc.aiRun,
+  Ipc.aiCancel,
+  Ipc.actionApply,
+  Ipc.captureOcr,
+  Ipc.fetchPage,
+  Ipc.historyList,
+  Ipc.historyDelete,
+  Ipc.permissionsPrompt,
+  Ipc.permissionsOpen,
+  Ipc.permissionsRefresh,
+  Ipc.shortcutSet,
+  Ipc.tokenRotate
+])

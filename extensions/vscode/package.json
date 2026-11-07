@@ -1,0 +1,19 @@
+{
+  "name": "smartcursor",
+  "displayName": "SmartCursor",
+  "description": "Sends the active editor selection to the SmartCursor desktop app and applies approved edits.",
+  "version": "0.1.0",
+  "publisher": "smartcursor",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "smartcursor.applyLast",
+        "title": "SmartCursor: Apply Last Approved Edit"
+      }
+    ]
+  }
+}

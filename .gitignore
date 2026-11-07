@@ -1,0 +1,10 @@
+node_modules
+.npm-cache
+out
+dist
+.DS_Store
+*.log
+native/macos/SmartCursorBridge
+.vite
+coverage
+user-data
