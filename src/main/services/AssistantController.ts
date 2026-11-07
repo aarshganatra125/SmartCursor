@@ -23,6 +23,8 @@ import type { SettingsManager } from './SettingsManager'
 import type { ChromeIntegration } from './ChromeIntegration'
 import type { MouseTriggerService } from './MouseTriggerService'
 import type { SportsService } from './SportsService'
+import type { ComputerAgent } from './ComputerAgent'
+import type { AgentMode } from '@shared/agent'
 
 export class AssistantController {
   private opening = false
@@ -53,7 +55,8 @@ export class AssistantController {
     private screenshots: ScreenshotService,
     private ocr: OCRService,
     private chrome: ChromeIntegration,
-    private mouse: MouseTriggerService
+    private mouse: MouseTriggerService,
+    private agent: ComputerAgent
   ) {}
 
   /**
@@ -63,6 +66,11 @@ export class AssistantController {
    */
   async open(options: { prefill?: ContextPrefill; toggle?: boolean } = {}): Promise<void> {
     const toggle = options.toggle ?? true
+    // Opening SmartCursor while it is operating the Mac means "stop".
+    if (this.agent.running()) {
+      this.agent.stop()
+      return
+    }
     if (this.guide) {
       // While a guide waits and clicks cannot be watched, the shortcut means "next step".
       if (toggle && !this.mouse.canWatchClicks()) {
@@ -126,6 +134,11 @@ export class AssistantController {
 
   resize(width: number, height: number): void {
     this.windows.resizeFloating(width, height)
+  }
+
+  /** The user clicked or typed in the popup, so it stops following the pointer. */
+  pinPopup(): void {
+    this.windows.pinFloating()
   }
 
   openSettings(): void {
@@ -258,12 +271,18 @@ export class AssistantController {
    * the next one, until the goal is reached (Settings → Displays → Brightness). It never clicks.
    * Clicks come from the Swift helper; without it, pressing the shortcut moves to the next step.
    */
-  async ghost(conversationId: string, query: string): Promise<GhostResult> {
+  async ghost(conversationId: string, query: string, mode: AgentMode = 'show'): Promise<GhostResult> {
     const session = this.sessions.get(conversationId)
     if (!session) return { ok: false, error: 'This assistant session is no longer open.' }
     const goal = query.trim().slice(0, 300)
     if (!goal) return { ok: false, error: 'Say what you are looking for.' }
     this.endGuide()
+    if (mode !== 'show') {
+      // "Do it": SmartCursor performs the steps (ask = approve each, auto = allow all but risky ones).
+      this.windows.hideFloating()
+      void this.agent.start({ goal, mode, appName: session.snapshot.app.name, bundleId: session.snapshot.app.bundleId })
+      return { ok: true }
+    }
     const pointer = screen.getCursorScreenPoint()
     this.guide = {
       goal,

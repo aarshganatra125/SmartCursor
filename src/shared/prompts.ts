@@ -138,3 +138,24 @@ export function buildLocatePrompt(goal: string, appName: string, stepsDone: stri
     'box_2d is the tight box around that control, normalized to 0-1000 relative to the image. If nothing on screen fits, use found false, omit box_2d, and say in "hint" where it usually is.'
   ].filter(Boolean).join('\n')
 }
+
+/** Prompt for "Do it" mode: choose ONE next action from a screenshot. Guardrails are enforced in code. */
+export function buildAgentPrompt(goal: string, appName: string, history: string[], notes: string[]): string {
+  return [
+    'You operate the user\'s Mac one step at a time to complete their goal. This is a screenshot of their entire display.',
+    appName ? `The app in front is ${appName} (it may be a web app inside a browser).` : '',
+    `Goal: "${truncate(goal.trim(), 300)}"`,
+    history.length ? `Actions already taken, in order: ${history.map((item, index) => `${index + 1}. ${item}`).join('  ')}` : 'No actions taken yet.',
+    notes.length ? `Results from earlier tools:\n${notes.map((note) => truncate(note, 1200)).join('\n')}` : '',
+    'Choose exactly ONE next action. Prefer the direct tools over clicking through menus:',
+    '- {"action":"find_files","query":"name to search"} finds files and folders in the home folder by name (Spotlight).',
+    '- {"action":"open_path","path":"/Users/…/Folder"} opens a folder in Finder or a document in its app. Use exact paths from find_files results.',
+    '- {"action":"open_app","name":"App Name"} opens an installed app. {"action":"open_url","url":"https://…"} opens a web page.',
+    '- {"action":"click"|"double_click","label":"text on the control","box_2d":[ymin,xmin,ymax,xmax]} clicks a control on screen; box_2d is the tight box normalized to 0-1000.',
+    '- {"action":"type","text":"…","submit":false} types into the focused field (click the field first). submit true presses Return after.',
+    '- {"action":"key","keys":"cmd+t"} presses a shortcut. {"action":"scroll","direction":"down"|"up"} scrolls under the pointer.',
+    '- {"action":"done","summary":"what was achieved"} when the goal is visibly complete. {"action":"fail","summary":"why"} if it cannot be done safely.',
+    'Rules: never delete, move, rename or overwrite files; never send, submit, buy or pay unless the goal says so; never type passwords or payment details; never use terminals or run commands.',
+    'Add "risky": true to any action that sends, deletes, buys, installs or changes settings. Add a short "reason". Reply with JSON only.'
+  ].filter(Boolean).join('\n')
+}

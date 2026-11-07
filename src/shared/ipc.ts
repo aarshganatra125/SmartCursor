@@ -2,7 +2,10 @@ export const Ipc = {
   bootstrap: 'bootstrap:get',
   panelHide: 'panel:hide',
   panelCurrent: 'panel:current',
-  panelResize: 'panel:resize',
+  /** renderer → main (send): content size; the first report reveals the popup */
+  panelSize: 'panel:size',
+  /** renderer → main (send): the user clicked or typed, so stop following the pointer */
+  panelPin: 'panel:pin',
   settingsUpdate: 'settings:update',
   settingsOpen: 'settings:open',
   secretSet: 'secret:set',
@@ -38,7 +41,6 @@ export const ALLOWED_INVOKE = new Set<string>([
   Ipc.bootstrap,
   Ipc.panelHide,
   Ipc.panelCurrent,
-  Ipc.panelResize,
   Ipc.settingsUpdate,
   Ipc.settingsOpen,
   Ipc.secretSet,

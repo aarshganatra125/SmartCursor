@@ -4,11 +4,30 @@ import { ACTIONS, layoutFor } from './actions'
 import { AnswerCard, Composer } from './components/AnswerCard'
 import { ContextTray, sourceLabel, type Include, type IncludeKey } from './components/ContextTray'
 import { Pill, type CaptureKind } from './components/Pill'
+import type { AgentMode } from '@shared/agent'
 
 type Status = 'idle' | 'loading' | 'error' | 'ready'
 
+
 /** Transparent margin around the popup so the CSS shadow is not clipped by the window edge. */
 const GUTTER = 14
+
+const MODE_KEY = 'smartcursor.ghostMode'
+
+function readMode(): AgentMode {
+  try {
+    const saved = window.localStorage.getItem(MODE_KEY)
+    return saved === 'ask' || saved === 'auto' ? saved : 'show'
+  } catch {
+    return 'show'
+  }
+}
+
+const GHOST_MODES: { id: AgentMode; label: string; title: string }[] = [
+  { id: 'show', label: 'Show me', title: 'Point at each step; you click' },
+  { id: 'ask', label: 'Do it', title: 'SmartCursor does each step after you approve it' },
+  { id: 'auto', label: 'Allow all', title: 'SmartCursor does the steps itself. Deleting, sending, paying and similar steps still ask first.' }
+]
 
 const freshInclude = (payload: PanelPayload | null): Include => ({
   surrounding: true,
@@ -29,6 +48,7 @@ export function App() {
   const [include, setInclude] = useState<Include>(freshInclude(null))
   const [askOpen, setAskOpen] = useState(false)
   const [pointOpen, setPointOpen] = useState(false)
+  const [ghostMode, setGhostMode] = useState<AgentMode>(readMode)
   const [sources, setSources] = useState<WebSource[]>([])
   const [searchQueries, setSearchQueries] = useState<string[]>([])
   const [moreOpen, setMoreOpen] = useState(false)
@@ -82,36 +102,43 @@ export function App() {
     document.documentElement.classList.toggle('dark', theme === 'dark')
   }, [theme])
 
-  // ── The window follows the content size ───────────────────────────────────
-  const lastSize = useRef('')
-  const report = useCallback((force = false) => {
-    const el = rootRef.current
-    if (!el || !window.smartcursor) return
-    const rect = el.getBoundingClientRect()
-    const width = Math.ceil(rect.width) + GUTTER * 2
-    const height = Math.ceil(rect.height) + GUTTER * 2
-    const key = `${width}x${height}`
-    if (!force && key === lastSize.current) return
-    lastSize.current = key
-    void window.smartcursor.resize(width, height)
-  }, [])
-
+  // ── The window is sized to the content (main process places it; macOS drags it) ──
   useLayoutEffect(() => {
     const el = rootRef.current
-    if (!el) return
-    let frame = 0
-    const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(() => report())
-    })
-    observer.observe(el)
-    // A new session may have the same size as the last one; report anyway so the window is revealed.
-    report(true)
-    return () => {
-      observer.disconnect()
-      cancelAnimationFrame(frame)
+    if (!el || !conversationId || !window.smartcursor) return
+    let last = ''
+    const report = () => {
+      const rect = el.getBoundingClientRect()
+      const width = Math.ceil(rect.width) + GUTTER * 2
+      const height = Math.ceil(rect.height) + GUTTER * 2
+      const key = `${width}x${height}`
+      if (key === last) return
+      last = key
+      window.smartcursor.reportSize(width, height)
     }
-  }, [report, conversationId])
+    const observer = new ResizeObserver(report)
+    observer.observe(el)
+    // Report right away for every new session (the first report also reveals the popup).
+    report()
+    return () => observer.disconnect()
+  }, [conversationId])
+
+  // Clicking or typing in the popup means "I'm using it": stop following the pointer.
+  useEffect(() => {
+    if (!conversationId || !window.smartcursor) return
+    let sent = false
+    const pin = () => {
+      if (sent) return
+      sent = true
+      window.smartcursor.pin()
+    }
+    window.addEventListener('pointerdown', pin, true)
+    window.addEventListener('keydown', pin, true)
+    return () => {
+      window.removeEventListener('pointerdown', pin, true)
+      window.removeEventListener('keydown', pin, true)
+    }
+  }, [conversationId])
 
   // ── Actions ───────────────────────────────────────────────────────────────
   const layout = useMemo(() => layoutFor(panel?.snapshot.app.category ?? 'other'), [panel?.snapshot.app.category])
@@ -216,7 +243,7 @@ export function App() {
     if (!panel || !query.trim()) return
     setDraft('')
     setPointOpen(false)
-    await window.smartcursor.ghost(panel.conversationId, query)
+    await window.smartcursor.ghost(panel.conversationId, query, ghostMode)
   }
 
   // ── Keyboard: Enter runs the lead action, digits pick the others, typing starts a question ──
@@ -316,14 +343,37 @@ export function App() {
       {showCard && (
         <div className="sc-surface sc-card">
           {pointOpen && !moreOpen ? (
-            <Composer
-              key="point"
-              value={draft}
-              autoFocus
-              placeholder="Show me where to… (e.g. export as PDF)"
-              onChange={setDraft}
-              onSubmit={() => void pointAt(draft)}
-            />
+            <>
+              <div className="sc-modes" role="radiogroup" aria-label="Ghost mode">
+                {GHOST_MODES.map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    role="radio"
+                    aria-checked={ghostMode === mode.id}
+                    title={mode.title}
+                    className={`sc-mode ${ghostMode === mode.id ? 'is-on' : ''} ${mode.id === 'auto' ? 'is-auto' : ''}`}
+                    onClick={() => {
+                      setGhostMode(mode.id)
+                      try { window.localStorage.setItem(MODE_KEY, mode.id) } catch { /* private mode */ }
+                    }}
+                  >
+                    {mode.label}
+                  </button>
+                ))}
+              </div>
+              <Composer
+                key={`point-${ghostMode}`}
+                value={draft}
+                autoFocus
+                placeholder={ghostMode === 'show' ? 'Show me where to… (e.g. insert a table)' : 'What should I do? (e.g. open my Resume folder)'}
+                onChange={setDraft}
+                onSubmit={() => void pointAt(draft)}
+              />
+              {ghostMode !== 'show' && (
+                <p className="sc-hint">{ghostMode === 'auto' ? 'SmartCursor will click and type for you. Deleting, sending, paying and similar steps still ask. Esc stops.' : 'SmartCursor asks before each step. Esc stops.'}</p>
+              )}
+            </>
           ) : moreOpen ? (
             <ContextTray
               snapshot={panel.snapshot}

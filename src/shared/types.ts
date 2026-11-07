@@ -66,6 +66,8 @@ export interface SettingsData {
   shortcut: string
   /** macOS: Shift + right-click anywhere opens the popup. */
   mouseTrigger: boolean
+  /** The toolbar trails the pointer after it opens, until the user heads for it or uses it. */
+  followPointer: boolean
   baseUrl: string
   integrations: { chrome: boolean; vscode: boolean }
   privacy: PrivacySettings
@@ -152,7 +154,7 @@ export interface AiResult {
 /** What the ghost-cursor overlay should draw, in coordinates local to the overlay window. */
 export type GhostPayload =
   | { kind: 'searching'; query: string; pointer: { x: number; y: number } }
-  | { kind: 'found'; query: string; step: number; final: boolean; label: string; hint: string; pointer: { x: number; y: number }; target: { x: number; y: number; width: number; height: number } }
+  | { kind: 'found'; query: string; step: number; final: boolean; verb?: string; label: string; hint: string; pointer: { x: number; y: number }; target: { x: number; y: number; width: number; height: number } }
   | { kind: 'message'; text: string; pointer: { x: number; y: number } }
 
 export interface GhostResult {

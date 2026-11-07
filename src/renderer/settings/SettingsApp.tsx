@@ -105,6 +105,10 @@ function General({ data, onChange, onError }: { data: Bootstrap; onChange: () =>
         <p className="mt-1 text-[12px]">{data.shortcutRegistered ? 'Shortcut is registered.' : data.shortcutError || 'Shortcut is not registered.'}</p>
         <button type="button" className={buttonClass} onClick={() => void saveShortcut(shortcut, onChange, onError)}>Save shortcut</button>
       </Field>
+      <div className="space-y-1">
+        <Check label="Toolbar follows the pointer" checked={data.settings.followPointer} onChange={(value) => void save({ followPointer: value }, onChange, onError)} />
+        <p className="pl-6 text-[12px] text-zinc-500">After it opens, the toolbar glides along with your pointer. It stops as soon as you move toward it, and stays put once you click, type or drag it.</p>
+      </div>
       {data.mouseTrigger.supported && (
         <div className="space-y-1">
           <Check label="Open with Shift + right-click anywhere" checked={data.settings.mouseTrigger} onChange={(value) => void save({ mouseTrigger: value }, onChange, onError)} />

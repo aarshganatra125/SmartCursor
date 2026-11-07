@@ -17,18 +17,21 @@ export function registerIpc(controller: AssistantController, database: AppDataba
     })
   }
 
+  // Fire-and-forget messages from the popup.
+  ipcMain.on(Ipc.panelSize, (_event, payload) => {
+    if (!isRecord(payload) || typeof payload.width !== 'number' || typeof payload.height !== 'number') return
+    if (!Number.isFinite(payload.width) || !Number.isFinite(payload.height)) return
+    controller.resize(payload.width, payload.height)
+  })
+  ipcMain.on(Ipc.panelPin, () => controller.pinPopup())
+
   handle(Ipc.bootstrap, async () => ({ ok: true, bootstrap: await withStorage(controller, database) }))
   handle(Ipc.panelHide, () => {
     controller.hide()
     return { ok: true }
   })
   handle(Ipc.panelCurrent, () => controller.current())
-  handle(Ipc.panelResize, (_event, payload) => {
-    if (!isRecord(payload) || typeof payload.width !== 'number' || typeof payload.height !== 'number') throw new Error('Missing size.')
-    if (!Number.isFinite(payload.width) || !Number.isFinite(payload.height)) throw new Error('Invalid size.')
-    controller.resize(payload.width, payload.height)
-    return { ok: true }
-  })
+
   handle(Ipc.settingsOpen, () => {
     controller.openSettings()
     return { ok: true }
@@ -80,7 +83,8 @@ export function registerIpc(controller: AssistantController, database: AppDataba
   })
   handle(Ipc.ghostRun, (_event, payload) => {
     if (!isRecord(payload) || typeof payload.conversationId !== 'string' || typeof payload.query !== 'string') throw new Error('Missing question.')
-    return controller.ghost(payload.conversationId, payload.query)
+    const mode = payload.mode === 'ask' || payload.mode === 'auto' ? payload.mode : 'show'
+    return controller.ghost(payload.conversationId, payload.query, mode)
   })
   handle(Ipc.openLink, async (_event, payload) => {
     // Only web links from search results; never file:, javascript: or custom schemes.
@@ -125,6 +129,7 @@ function asSettingsPatch(payload: unknown): Partial<SettingsData> {
   if (typeof payload.model === 'string') patch.model = payload.model
   if (typeof payload.shortcut === 'string') patch.shortcut = payload.shortcut
   if (typeof payload.mouseTrigger === 'boolean') patch.mouseTrigger = payload.mouseTrigger
+  if (typeof payload.followPointer === 'boolean') patch.followPointer = payload.followPointer
   if (typeof payload.baseUrl === 'string') patch.baseUrl = payload.baseUrl
   if (isRecord(payload.integrations)) {
     patch.integrations = {

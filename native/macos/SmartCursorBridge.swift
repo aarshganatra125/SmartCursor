@@ -160,6 +160,104 @@ func recognize(_ path: String) -> [String: Any] {
     }
 }
 
+// MARK: - Computer use (only after SmartCursor's guardrails and the user's approval)
+
+let keyCodes: [String: CGKeyCode] = [
+    "a": 0, "s": 1, "d": 2, "f": 3, "h": 4, "g": 5, "z": 6, "x": 7, "c": 8, "v": 9, "b": 11, "q": 12,
+    "w": 13, "e": 14, "r": 15, "y": 16, "t": 17, "1": 18, "2": 19, "3": 20, "4": 21, "6": 22, "5": 23,
+    "=": 24, "9": 25, "7": 26, "-": 27, "8": 28, "0": 29, "]": 30, "o": 31, "u": 32, "[": 33, "i": 34,
+    "p": 35, "return": 36, "enter": 36, "l": 37, "j": 38, "'": 39, "k": 40, ";": 41, "\\": 42, ",": 43,
+    "/": 44, "n": 45, "m": 46, ".": 47, "tab": 48, "space": 49, "`": 50, "backspace": 51, "escape": 53,
+    "esc": 53, "home": 115, "pageup": 116, "forwarddelete": 117, "end": 119, "pagedown": 121,
+    "left": 123, "right": 124, "down": 125, "up": 126
+]
+
+func mouseClick(x: Double, y: Double, count: Int) -> [String: Any] {
+    guard isTrusted() else { return ["ok": boolValue(false), "error": "accessibility-denied"] }
+    let point = CGPoint(x: x, y: y)
+    let source = CGEventSource(stateID: .hidSystemState)
+    CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+    usleep(60_000)
+    for click in 1...max(1, min(count, 2)) {
+        let down = CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)
+        let up = CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)
+        down?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
+        up?.setIntegerValueField(.mouseEventClickState, value: Int64(click))
+        down?.post(tap: .cghidEventTap)
+        usleep(40_000)
+        up?.post(tap: .cghidEventTap)
+        usleep(60_000)
+    }
+    return ["ok": boolValue(true)]
+}
+
+func typeText(_ text: String) -> [String: Any] {
+    guard isTrusted() else { return ["ok": boolValue(false), "error": "accessibility-denied"] }
+    let source = CGEventSource(stateID: .hidSystemState)
+    let units = Array(text.utf16)
+    var index = 0
+    while index < units.count {
+        let chunk = Array(units[index..<min(index + 16, units.count)])
+        let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+        let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false)
+        down?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+        up?.keyboardSetUnicodeString(stringLength: chunk.count, unicodeString: chunk)
+        down?.post(tap: .cghidEventTap)
+        up?.post(tap: .cghidEventTap)
+        usleep(25_000)
+        index += 16
+    }
+    return ["ok": boolValue(true)]
+}
+
+/// "cmd+shift+t", "return", "down". Modifiers: cmd, shift, alt/option, ctrl.
+func pressKeys(_ combo: String) -> [String: Any] {
+    guard isTrusted() else { return ["ok": boolValue(false), "error": "accessibility-denied"] }
+    let parts = combo.lowercased().split(separator: "+").map { String($0).trimmingCharacters(in: .whitespaces) }
+    guard let keyName = parts.last, let code = keyCodes[keyName] else {
+        return ["ok": boolValue(false), "error": "unknown-key"]
+    }
+    var flags = CGEventFlags()
+    for modifier in parts.dropLast() {
+        switch modifier {
+        case "cmd", "command": flags.insert(.maskCommand)
+        case "shift": flags.insert(.maskShift)
+        case "alt", "option", "opt": flags.insert(.maskAlternate)
+        case "ctrl", "control": flags.insert(.maskControl)
+        default: return ["ok": boolValue(false), "error": "unknown-modifier"]
+        }
+    }
+    let source = CGEventSource(stateID: .hidSystemState)
+    let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true)
+    let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false)
+    down?.flags = flags
+    up?.flags = flags
+    down?.post(tap: .cghidEventTap)
+    usleep(30_000)
+    up?.post(tap: .cghidEventTap)
+    return ["ok": boolValue(true)]
+}
+
+func scroll(dy: Int32) -> [String: Any] {
+    guard isTrusted() else { return ["ok": boolValue(false), "error": "accessibility-denied"] }
+    let event = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: dy, wheel2: 0, wheel3: 0)
+    event?.post(tap: .cghidEventTap)
+    return ["ok": boolValue(true)]
+}
+
+/// Whether keyboard focus is in a password field, so SmartCursor never types into one.
+func focusedIsSecure() -> [String: Any] {
+    guard isTrusted() else { return ["ok": boolValue(false), "error": "accessibility-denied"] }
+    guard let app = NSWorkspace.shared.frontmostApplication else { return ["ok": boolValue(true), "secure": boolValue(false)] }
+    let axApp = AXUIElementCreateApplication(app.processIdentifier)
+    guard let focused = copyAttribute(axApp, kAXFocusedUIElementAttribute as String) else {
+        return ["ok": boolValue(true), "secure": boolValue(false)]
+    }
+    let element = focused as! AXUIElement
+    let subrole = copyAttribute(element, kAXSubroleAttribute as String) as? String ?? ""
+    return ["ok": boolValue(true), "secure": boolValue(subrole == (kAXSecureTextFieldSubrole as String))]
+}
+
 // MARK: - Shift + right-click trigger
 
 // Event-tap callbacks are C function pointers and cannot capture state, so it lives in globals.
@@ -289,6 +387,19 @@ case "ocr":
     emit(recognize(arguments.count > 2 ? arguments[2] : ""))
 case "watch-mouse":
     watchMouse()
+case "click":
+    let x = arguments.count > 2 ? Double(arguments[2]) : nil
+    let y = arguments.count > 3 ? Double(arguments[3]) : nil
+    let count = arguments.count > 4 ? Int(arguments[4]) ?? 1 : 1
+    if let x, let y { emit(mouseClick(x: x, y: y, count: count)) } else { emit(["ok": boolValue(false), "error": "usage"]) }
+case "type":
+    emit(typeText(arguments.count > 2 ? arguments[2] : ""))
+case "key":
+    emit(pressKeys(arguments.count > 2 ? arguments[2] : ""))
+case "scroll":
+    emit(scroll(dy: Int32(arguments.count > 2 ? Int(arguments[2]) ?? 0 : 0)))
+case "focused-secure":
+    emit(focusedIsSecure())
 default:
     emit(["ok": boolValue(false), "error": "unknown-command"])
     exit(1)

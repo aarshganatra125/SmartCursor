@@ -7,6 +7,7 @@ export const DEFAULT_SETTINGS: SettingsData = {
   model: 'gemini-3.5-flash-lite',
   shortcut: 'CommandOrControl+Shift+Space',
   mouseTrigger: true,
+  followPointer: true,
   baseUrl: '',
   integrations: { chrome: true, vscode: true },
   privacy: {

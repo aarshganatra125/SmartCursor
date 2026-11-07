@@ -5,7 +5,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "postinstall": "node scripts/ensure-electron.mjs && node scripts/build-native.mjs",
-    "dev": "node scripts/electron-vite.mjs dev",
+    "dev": "node scripts/electron-vite.mjs dev --watch",
     "build": "node scripts/build-native.mjs && electron-vite build",
     "build:native": "node scripts/build-native.mjs",
     "start": "node scripts/electron-vite.mjs preview",

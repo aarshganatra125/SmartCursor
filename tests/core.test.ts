@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { categorizeApp } from '../src/shared/categorize'
-import { boxToScreen, choosePlacement, placePopup } from '../src/shared/geometry'
+import { boxToScreen, choosePlacement, companionFrozen, placePopup } from '../src/shared/geometry'
 import { buildLocatePrompt, buildMessages } from '../src/shared/prompts'
 import { parseBridgeContext, parseBridgeResult, parseClientId, parseFocusedAt, parseInstanceId } from '../src/shared/protocol'
 import { extractInsertable, isAccelerator, parseLocateResult } from '../src/shared/text'
@@ -42,6 +42,25 @@ describe('popup placement', () => {
     expect(position.x + 420).toBeLessThanOrEqual(1920 + 1440)
     expect(position.y).toBeGreaterThanOrEqual(0)
     expect(position.y + 500).toBeLessThanOrEqual(900)
+  })
+})
+
+describe('toolbar following the pointer', () => {
+  const popup = { x: 500, y: 300, width: 360, height: 72 }
+
+  it('keeps following while the pointer moves away or sideways', () => {
+    expect(companionFrozen({ frozen: false, last: { x: 480, y: 280 }, pointer: { x: 460, y: 260 }, popup })).toBe(false)
+    expect(companionFrozen({ frozen: false, last: { x: 480, y: 280 }, pointer: { x: 480, y: 240 }, popup })).toBe(false)
+  })
+
+  it('stops as soon as the pointer heads for it or touches it, so it can be clicked', () => {
+    expect(companionFrozen({ frozen: false, last: { x: 480, y: 280 }, pointer: { x: 490, y: 288 }, popup })).toBe(true)
+    expect(companionFrozen({ frozen: false, last: { x: 600, y: 330 }, pointer: { x: 601, y: 330 }, popup })).toBe(true)
+  })
+
+  it('starts following again once the pointer wanders far off', () => {
+    expect(companionFrozen({ frozen: true, last: { x: 300, y: 300 }, pointer: { x: 250, y: 300 }, popup })).toBe(false)
+    expect(companionFrozen({ frozen: true, last: { x: 480, y: 300 }, pointer: { x: 460, y: 300 }, popup })).toBe(true)
   })
 })
 

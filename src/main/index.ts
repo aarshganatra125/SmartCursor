@@ -26,6 +26,7 @@ import { GlobalShortcutManager } from './services/GlobalShortcutManager'
 import { ActionExecutionService } from './services/ActionExecutionService'
 import { AssistantController } from './services/AssistantController'
 import { MouseTriggerService } from './services/MouseTriggerService'
+import { ComputerAgent } from './services/ComputerAgent'
 
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals')
 app.setName('SmartCursor')
@@ -68,15 +69,17 @@ app.whenReady().then(async () => {
   const windows = new DesktopWindowManager({
     openAssistant: () => gateway.open(),
     openSettings: () => gateway.settings(),
-    onFloatingHidden: () => gateway.hidden()
+    onFloatingHidden: () => gateway.hidden(),
+    shouldFollow: () => settings.get().followPointer
   })
   gateway.windows = windows
   const shortcuts = new GlobalShortcutManager(settings, () => gateway.open())
   const actions = new ActionExecutionService(bridge, chrome, vscode, windows)
   const mouse = new MouseTriggerService(bridge, settings, () => gateway.openAtPointer())
+  const agent = new ComputerAgent(bridge, screenshots, ai, windows)
   const controller = new AssistantController(
     windows, shortcuts, context, conversations, sessions, settings, secure, scores,
-    permissions, integrations, ai, actions, screenshots, ocr, chrome, mouse
+    permissions, integrations, ai, actions, screenshots, ocr, chrome, mouse, agent
   )
   gateway.open = () => void controller.open()
   gateway.settings = () => controller.openSettings()

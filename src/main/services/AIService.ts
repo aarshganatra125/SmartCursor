@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import type { ActionKind, AiResult, RunRequest, WebSource } from '@shared/types'
 import { LIMITS } from '@shared/types'
-import { buildLocatePrompt, buildMessages } from '@shared/prompts'
+import { buildAgentPrompt, buildLocatePrompt, buildMessages } from '@shared/prompts'
+import { parseAgentAction, type AgentAction } from '@shared/agent'
 import { extractInsertable, parseLocateResult, type LocateResult } from '@shared/text'
 import type { ConversationManager } from './ConversationManager'
 import type { SecureStore } from './SecureStore'
 import type { SessionStore } from './SessionStore'
 import type { SettingsManager } from './SettingsManager'
 import type { SportsService } from './SportsService'
+import { log } from '../logger'
 
 const GEMINI_ROOT = 'https://generativelanguage.googleapis.com/v1beta'
 const TRANSCRIBE_MODEL = 'gemini-3.5-transcribe'
@@ -60,14 +62,12 @@ export class AIService {
       history: session.turns,
       search
     })
-    const creative = request.action === 'rewrite' || request.action === 'reply' || request.action === 'improve'
     try {
       const { text, sources, searchQueries } = await streamGemini({
         apiKey,
         model: settings.model,
         baseUrl: settings.baseUrl,
         messages,
-        temperature: creative ? 0.4 : undefined,
         search,
         signal,
         onDelta
@@ -125,35 +125,51 @@ export class AIService {
     this.conversations.append(conversationId, 'assistant', text, action)
   }
 
-  /** Ghost cursor: ask Gemini where a control is on a screenshot of one display. */
+  /** Ghost cursor "Show me": ask Gemini where the next control is on a screenshot of one display. */
   async locate(input: { query: string; appName: string; stepsDone: string[]; jpegBase64: string; signal?: AbortSignal }): Promise<{ ok: true; result: LocateResult } | { ok: false; error: string }> {
+    const answer = await this.vision('Ghost locate', buildLocatePrompt(input.query, input.appName, input.stepsDone), input.jpegBase64, input.signal)
+    if (!answer.ok) return answer
+    const result = parseLocateResult(answer.text)
+    if (!result) return { ok: false, error: answer.finish === 'MAX_TOKENS' ? 'Gemini’s answer ran too long. Try again, or pick another model in Settings.' : 'Gemini did not return a usable location. Try rephrasing.' }
+    return { ok: true, result }
+  }
+
+  /** Ghost cursor "Do it": ask Gemini for the single next action. */
+  async decide(input: { goal: string; appName: string; history: string[]; notes: string[]; jpegBase64: string }): Promise<{ ok: true; action: AgentAction } | { ok: false; error: string }> {
+    const answer = await this.vision('Ghost act', buildAgentPrompt(input.goal, input.appName, input.history, input.notes), input.jpegBase64)
+    if (!answer.ok) return answer
+    const action = parseAgentAction(answer.text)
+    if (!action) return { ok: false, error: 'Gemini suggested something SmartCursor cannot do. Try rephrasing the task.' }
+    return { ok: true, action }
+  }
+
+  private async vision(label: string, prompt: string, jpegBase64: string, signal?: AbortSignal): Promise<{ ok: true; text: string; finish: string } | { ok: false; error: string }> {
     const apiKey = this.secure.read()
     if (!apiKey) return { ok: false, error: 'Add a Gemini API key in Settings first.' }
     const settings = this.settings.get()
     const root = (settings.baseUrl || GEMINI_ROOT).replace(/\/$/, '')
+    const started = Date.now()
+    const imageKb = Math.round(jpegBase64.length * 0.75 / 1024)
     try {
       const response = await fetch(`${root}/models/${encodeURIComponent(settings.model)}:generateContent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
         body: JSON.stringify({
-          contents: [{
-            role: 'user',
-            parts: [
-              { text: buildLocatePrompt(input.query, input.appName, input.stepsDone) },
-              { inline_data: { mime_type: 'image/jpeg', data: input.jpegBase64 } }
-            ]
-          }],
-          generationConfig: { responseMimeType: 'application/json', temperature: 0 }
+          contents: [{ role: 'user', parts: [{ text: prompt }, { inline_data: { mime_type: 'image/jpeg', data: jpegBase64 } }] }],
+          // No temperature override: Gemini 3 can loop at low temperatures, which looked like a timeout.
+          // The token cap stops a runaway answer quickly instead of waiting for the timeout.
+          generationConfig: { responseMimeType: 'application/json', maxOutputTokens: 1024 }
         }),
-        signal: input.signal ?? AbortSignal.timeout(30_000)
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000)
       })
       if (!response.ok) throw new GeminiError(response.status, await geminiErrorMessage(response))
       const body = await response.json() as unknown
       const text = parsePayload(body).text
-      const result = parseLocateResult(text)
-      if (!result) return { ok: false, error: 'Gemini did not return a usable location. Try rephrasing.' }
-      return { ok: true, result }
+      const finish = finishReason(body)
+      log.info(label, { ms: Date.now() - started, imageKb, model: settings.model, finish, chars: text.length })
+      return { ok: true, text, finish }
     } catch (error) {
+      log.warn(`${label} failed`, { ms: Date.now() - started, imageKb, model: settings.model, reason: error instanceof Error ? error.name : 'unknown' })
       return { ok: false, error: explainAiError(error) }
     }
   }
@@ -173,7 +189,6 @@ async function streamGemini(input: {
   model: string
   baseUrl: string
   messages: GeminiMessage[]
-  temperature?: number
   search?: boolean
   signal: AbortSignal
   onDelta: (delta: string) => void
@@ -195,8 +210,7 @@ async function streamGemini(input: {
     body: JSON.stringify({
       systemInstruction: system ? { parts: [{ text: system.content }] } : undefined,
       contents,
-      ...(input.search ? { tools: [{ google_search: {} }] } : {}),
-      ...(input.temperature === undefined ? {} : { generationConfig: { temperature: input.temperature } })
+      ...(input.search ? { tools: [{ google_search: {} }] } : {})
     }),
     signal: input.signal
   })
@@ -297,6 +311,12 @@ async function geminiErrorMessage(response: Response): Promise<string> {
   }
 }
 
+function finishReason(body: unknown): string {
+  const candidates = (body as { candidates?: Array<{ finishReason?: unknown }> } | null)?.candidates
+  const reason = candidates?.[0]?.finishReason
+  return typeof reason === 'string' ? reason : 'none'
+}
+
 export function explainAiError(error: unknown, options: { usesGoogleSearch?: boolean } = {}): string {
   if (error instanceof GeminiError) {
     if (error.status === 400) return `Gemini rejected the request. ${error.message}`.slice(0, 300)
@@ -309,6 +329,9 @@ export function explainAiError(error: unknown, options: { usesGoogleSearch?: boo
     }
     if (error.status === 503) return 'Gemini is temporarily unavailable. Wait a moment and retry.'
     return error.message.slice(0, 300)
+  }
+  if (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+    return 'Gemini took too long to answer. Check your connection and try again.'
   }
   if (error instanceof Error) return error.message.slice(0, 300)
   return 'The model request failed.'

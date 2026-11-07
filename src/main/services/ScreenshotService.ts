@@ -16,11 +16,12 @@ export class ScreenshotService {
   /**
    * Capture one whole display as JPEG, for the ghost cursor. Kept in memory only, never written to disk.
    * Uses the display's real pixels (Retina is 2×) so small menu text stays readable, with the long side
-   * capped at 1920px: about six 768px tiles, ~1,500 image tokens.
+   * capped at 1600px. Gemini 3 bills an image at a fixed token budget by default, so a bigger upload
+   * only adds upload time, not detail it will use.
    */
   async captureDisplay(display: { id: number; width: number; height: number; scaleFactor: number }): Promise<string> {
     this.assertAllowed()
-    const scale = Math.min(display.scaleFactor, 1920 / Math.max(display.width, display.height))
+    const scale = Math.min(display.scaleFactor, 1600 / Math.max(display.width, display.height))
     const sources = await desktopCapturer.getSources({
       types: ['screen'],
       thumbnailSize: { width: Math.round(display.width * scale), height: Math.round(display.height * scale) },

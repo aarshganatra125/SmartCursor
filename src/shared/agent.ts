@@ -1,0 +1,214 @@
+/**
+ * "Do it" mode for the ghost cursor: the model picks one action at a time from a screenshot,
+ * and every action passes these guardrails before SmartCursor performs it.
+ * The guardrails are plain code, not instructions to the model, so a confused or manipulated
+ * model cannot talk its way past them.
+ */
+
+export type AgentMode = 'show' | 'ask' | 'auto'
+
+export type AgentAction =
+  | { kind: 'click'; label: string; box: [number, number, number, number]; double: boolean; risky: boolean; reason: string }
+  | { kind: 'type'; text: string; submit: boolean; risky: boolean; reason: string }
+  | { kind: 'key'; keys: string; risky: boolean; reason: string }
+  | { kind: 'scroll'; direction: 'up' | 'down'; risky: boolean; reason: string }
+  | { kind: 'find_files'; query: string; risky: boolean; reason: string }
+  | { kind: 'open_path'; path: string; risky: boolean; reason: string }
+  | { kind: 'open_app'; name: string; risky: boolean; reason: string }
+  | { kind: 'open_url'; url: string; risky: boolean; reason: string }
+  | { kind: 'done'; summary: string; risky: false; reason: string }
+  | { kind: 'fail'; summary: string; risky: false; reason: string }
+
+export type Verdict = { decision: 'allow' } | { decision: 'confirm'; why: string } | { decision: 'block'; why: string }
+
+export const AGENT_LIMITS = { steps: 12, ms: 120_000, typeChars: 500 }
+
+const str = (value: unknown, max: number) => (typeof value === 'string' ? value.trim().slice(0, max) : '')
+
+/** Parse the model's JSON. Unknown or malformed actions become null (the run stops). */
+export function parseAgentAction(raw: string): AgentAction | null {
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  let value: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as unknown
+    if (!parsed || typeof parsed !== 'object') return null
+    value = parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+  const risky = value.risky === true
+  const reason = str(value.reason, 200)
+  switch (value.action) {
+    case 'click':
+    case 'double_click': {
+      const box = value.box_2d
+      if (!Array.isArray(box) || box.length !== 4 || !box.every((n) => typeof n === 'number' && Number.isFinite(n))) return null
+      return { kind: 'click', label: str(value.label, 80), box: box as [number, number, number, number], double: value.action === 'double_click', risky, reason }
+    }
+    case 'type': {
+      const text = typeof value.text === 'string' ? value.text.slice(0, AGENT_LIMITS.typeChars + 1) : ''
+      return text ? { kind: 'type', text, submit: value.submit === true, risky, reason } : null
+    }
+    case 'key': {
+      const keys = str(value.keys, 40).toLowerCase()
+      return keys ? { kind: 'key', keys, risky, reason } : null
+    }
+    case 'scroll':
+      return { kind: 'scroll', direction: value.direction === 'up' ? 'up' : 'down', risky, reason }
+    case 'find_files': {
+      const query = str(value.query, 120)
+      return query ? { kind: 'find_files', query, risky, reason } : null
+    }
+    case 'open_path': {
+      const path = str(value.path, 1000)
+      return path ? { kind: 'open_path', path, risky, reason } : null
+    }
+    case 'open_app': {
+      const name = str(value.name, 80)
+      return name ? { kind: 'open_app', name, risky, reason } : null
+    }
+    case 'open_url': {
+      const url = str(value.url, 2000)
+      return url ? { kind: 'open_url', url, risky, reason } : null
+    }
+    case 'done':
+      return { kind: 'done', summary: str(value.summary, 240), risky: false, reason }
+    case 'fail':
+      return { kind: 'fail', summary: str(value.summary, 240), risky: false, reason }
+    default:
+      return null
+  }
+}
+
+/** Apps SmartCursor never operates: shells, disk and password tools, and SmartCursor itself. */
+const BLOCKED_APPS = [
+  'com.apple.terminal', 'com.googlecode.iterm2', 'dev.warp.warp', 'net.kovidgoyal.kitty', 'org.alacritty', 'com.github.wez.wezterm', 'co.zeit.hyper',
+  'com.apple.diskutility', 'com.apple.keychainaccess', 'com.apple.scripteditor2', 'com.apple.automator', 'com.apple.activitymonitor',
+  'com.github.electron', 'smartcursor'
+]
+const BLOCKED_APP_NAMES = /^(terminal|iterm2?|warp|kitty|alacritty|wezterm|hyper|disk utility|keychain access|script editor|automator|activity monitor|console|smartcursor|electron)$/i
+
+/** Shortcuts that delete, quit everything, force quit, lock or log out (compared after normalizing). */
+const BLOCKED_KEY_LIST = [
+  'cmd+backspace', 'cmd+forwarddelete', 'cmd+shift+backspace', 'cmd+alt+shift+backspace', 'cmd+alt+backspace',
+  'cmd+alt+escape', 'ctrl+cmd+q', 'cmd+shift+q', 'cmd+alt+shift+q', 'ctrl+cmd+power', 'ctrl+alt+cmd+power'
+]
+
+/** Words that mean "this changes or sends something for real". Always asks, even in allow-all mode. */
+const RISKY_WORDS = /\b(delete|remove|erase|trash|bin|uninstall|format|wipe|reset|restore|shut\s*down|restart|reboot|log\s*out|sign\s*out|send|submit|post|publish|share|pay|payment|buy|purchase|checkout|order|transfer|withdraw|subscribe|install|allow|permission|grant|password|overwrite|replace|discard|don.?t save|empty|unsubscribe|merge|deploy|accept|agree)\b/i
+
+/** Files that run code when opened; SmartCursor only opens documents and folders. */
+const EXECUTABLE = /\.(app|command|sh|bash|zsh|tool|pkg|mpkg|dmg|scpt|scptd|applescript|workflow|terminal|jar|py|rb|pl|js|mjs|exe|bin|run|plugin|kext|prefpane|webloc|inetloc|fileloc)$/i
+
+export interface GuardContext {
+  frontBundleId: string
+  frontAppName: string
+  homeDir: string
+  /** The model's own previous actions this run, for loop detection. */
+  history: string[]
+}
+
+export function normalizeKeys(keys: string): string {
+  const parts = keys.toLowerCase().replace(/\s+/g, '').replace(/command/g, 'cmd').replace(/option|opt/g, 'alt').replace(/control/g, 'ctrl').split('+').filter(Boolean)
+  const raw = parts.pop() ?? ''
+  const key = raw === 'delete' ? 'backspace' : raw === 'esc' ? 'escape' : raw === 'enter' ? 'return' : raw
+  const order = ['ctrl', 'alt', 'shift', 'cmd']
+  const modifiers = [...new Set(parts)].sort((a, b) => order.indexOf(a) - order.indexOf(b))
+  return [...modifiers, key].join('+')
+}
+
+const BLOCKED_KEYS = new Set(BLOCKED_KEY_LIST.map(normalizeKeys))
+
+/** Expand ~ and reject anything outside the home folder or with tricks like "..". */
+export function resolveHomePath(path: string, homeDir: string): string | null {
+  const expanded = path.startsWith('~') ? homeDir + path.slice(1) : path
+  if (!expanded.startsWith('/') || expanded.includes('/../') || expanded.endsWith('/..') || expanded.includes('\0')) return null
+  const home = homeDir.replace(/\/$/, '')
+  if (expanded !== home && !expanded.startsWith(`${home}/`)) return null
+  if (/\/Library(\/|$)/.test(expanded.slice(home.length))) return null
+  return expanded.replace(/\/$/, '') || '/'
+}
+
+export function checkAction(action: AgentAction, ctx: GuardContext): Verdict {
+  const front = `${ctx.frontBundleId} ${ctx.frontAppName}`.toLowerCase()
+  const onScreen = action.kind === 'click' || action.kind === 'type' || action.kind === 'key' || action.kind === 'scroll'
+  if (onScreen && (BLOCKED_APPS.some((id) => front.includes(id)) || BLOCKED_APP_NAMES.test(ctx.frontAppName.trim()))) {
+    return { decision: 'block', why: `SmartCursor does not operate ${ctx.frontAppName || 'this app'} (terminals, disk, password and system tools are off-limits).` }
+  }
+
+  // Doing the same thing three times in a row means it is stuck.
+  const signature = describeAction(action)
+  if (ctx.history.length >= 2 && ctx.history.slice(-2).every((item) => item === signature)) {
+    return { decision: 'block', why: 'It kept repeating the same step, so it stopped.' }
+  }
+
+  switch (action.kind) {
+    case 'click':
+      if (RISKY_WORDS.test(action.label)) return { decision: 'confirm', why: `Click “${action.label}”?` }
+      break
+    case 'type': {
+      if (action.text.length > AGENT_LIMITS.typeChars) return { decision: 'block', why: 'That is more text than SmartCursor types for you.' }
+      const digits = action.text.replace(/[\s-]/g, '')
+      if (/\d{13,19}/.test(digits)) return { decision: 'block', why: 'That looks like a card or account number. SmartCursor does not type those.' }
+      if (action.submit || RISKY_WORDS.test(action.text)) return { decision: 'confirm', why: `Type “${preview(action.text)}”${action.submit ? ' and press Return' : ''}?` }
+      break
+    }
+    case 'key': {
+      const keys = normalizeKeys(action.keys)
+      if (BLOCKED_KEYS.has(keys)) {
+        return { decision: 'block', why: `The shortcut ${action.keys} can delete files, force quit or log out, so it is blocked.` }
+      }
+      if (keys === 'cmd+q' || keys === 'cmd+w' || keys === 'return' || keys === 'cmd+return') {
+        return { decision: 'confirm', why: keys === 'cmd+q' ? `Quit ${ctx.frontAppName || 'this app'}?` : keys === 'cmd+w' ? 'Close this window?' : 'Press Return (this may send or submit)?' }
+      }
+      break
+    }
+    case 'open_path': {
+      const resolved = resolveHomePath(action.path, ctx.homeDir)
+      if (!resolved) return { decision: 'block', why: 'SmartCursor only opens folders and documents inside your home folder (not Library).' }
+      if (EXECUTABLE.test(resolved)) return { decision: 'block', why: 'That file would run a program when opened, so SmartCursor will not open it.' }
+      break
+    }
+    case 'open_app':
+      if (BLOCKED_APP_NAMES.test(action.name.trim()) || /\.(sh|command|py|js)$/i.test(action.name)) {
+        return { decision: 'block', why: `SmartCursor does not open ${action.name}.` }
+      }
+      break
+    case 'open_url': {
+      let url: URL
+      try {
+        url = new URL(action.url)
+      } catch {
+        return { decision: 'block', why: 'That is not a valid web address.' }
+      }
+      if (url.protocol !== 'https:') return { decision: 'block', why: 'Only https web pages can be opened.' }
+      break
+    }
+    default:
+      break
+  }
+  if (action.risky) return { decision: 'confirm', why: action.reason || 'The AI marked this step as risky.' }
+  return { decision: 'allow' }
+}
+
+export function describeAction(action: AgentAction): string {
+  switch (action.kind) {
+    case 'click': return `${action.double ? 'double-click' : 'click'} “${action.label}”`
+    case 'type': return `type “${preview(action.text)}”${action.submit ? ' + Return' : ''}`
+    case 'key': return `press ${normalizeKeys(action.keys)}`
+    case 'scroll': return `scroll ${action.direction}`
+    case 'find_files': return `find “${action.query}”`
+    case 'open_path': return `open ${action.path}`
+    case 'open_app': return `open ${action.name}`
+    case 'open_url': return `open ${action.url}`
+    case 'done': return 'done'
+    case 'fail': return 'give up'
+  }
+}
+
+function preview(text: string): string {
+  const clean = text.replace(/\s+/g, ' ').trim()
+  return clean.length > 40 ? `${clean.slice(0, 39)}…` : clean
+}

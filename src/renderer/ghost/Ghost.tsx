@@ -77,7 +77,7 @@ function Found({ payload }: { payload: Extract<GhostPayload, { kind: 'found' }> 
       </div>
       {arrived && (
         <div className="gh-label" style={labelStyle}>
-          <p className="gh-label-step">{payload.final ? (payload.step > 1 ? 'Last step' : 'Here') : `Step ${payload.step}`}</p>
+          <p className="gh-label-step">{payload.verb ? `Step ${payload.step} · ${payload.verb}` : payload.final ? (payload.step > 1 ? 'Last step' : 'Here') : `Step ${payload.step}`}</p>
           <p className="gh-label-title">{payload.label}</p>
           {payload.hint && <p className="gh-label-hint">{payload.hint}</p>}
         </div>
