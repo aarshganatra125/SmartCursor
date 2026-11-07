@@ -124,6 +124,7 @@ function General({ data, onChange, onError }: { data: Bootstrap; onChange: () =>
 
 function Ai({ data, onChange, onError }: { data: Bootstrap; onChange: () => Promise<void>; onError: (value: string | null) => void }) {
   const [key, setKey] = useState('')
+  const [oddsKey, setOddsKey] = useState('')
   const [model, setModel] = useState(data.settings.model)
   const [baseUrl, setBaseUrl] = useState(data.settings.baseUrl)
   return (
@@ -135,6 +136,14 @@ function Ai({ data, onChange, onError }: { data: Bootstrap; onChange: () => Prom
         <div className="mt-2 flex gap-2">
           <button type="button" className={buttonClass} onClick={() => void saveKey(key, setKey, onChange, onError)}>Save key</button>
           <button type="button" className={quietButton} onClick={() => void clearKey(onChange, onError)}>Remove key</button>
+        </div>
+      </Field>
+      <Field label="The Odds API key (live scores)">
+        <p className="mb-2 text-[12px] text-zinc-500">{data.hasOddsApiKey ? `Saved in the system keychain (${data.oddsApiKeyHint}). Live-score questions use The Odds API directly, without Gemini Search.` : 'No key saved. Add a free The Odds API key to enable live scores.'}</p>
+        <input type="password" value={oddsKey} onChange={(event) => setOddsKey(event.target.value)} placeholder="Odds API key" className={inputClass} />
+        <div className="mt-2 flex gap-2">
+          <button type="button" className={buttonClass} onClick={() => void saveOddsKey(oddsKey, setOddsKey, onChange, onError)}>Save key</button>
+          <button type="button" className={quietButton} onClick={() => void clearOddsKey(onChange, onError)}>Remove key</button>
         </div>
       </Field>
       <Field label="Model">
@@ -212,7 +221,7 @@ function Privacy({ data, onChange, onError }: { data: Bootstrap; onChange: () =>
       <Check label="Store conversation history locally" checked={privacy.storeHistory} onChange={(value) => update({ storeHistory: value })} />
       <Check label="Allow a temporary Copy when accessibility cannot read the selection" checked={privacy.allowClipboardFallback} onChange={(value) => update({ allowClipboardFallback: value })} />
       <Check label="Allow screenshot capture and OCR after I click Capture" checked={privacy.allowScreenshotOcr} onChange={(value) => update({ allowScreenshotOcr: value })} />
-      <p className="text-[13px] leading-5 text-zinc-600 dark:text-zinc-300">Selected text is shown in the panel before any model request. Screenshots are deleted after OCR and are not written to the database. API keys stay in the operating system keychain. SmartCursor does not send email, submit forms, or run terminal commands.</p>
+      <p className="text-[13px] leading-5 text-zinc-600 dark:text-zinc-300">Selected text is shown in the panel before any model request. Screenshots are deleted after OCR and are not written to the database. Voice input records only after you click the mic, sends one short clip to Gemini for transcription, then discards the audio. API keys stay in the operating system keychain. SmartCursor does not send email, submit forms, or run terminal commands.</p>
     </div>
   )
 }
@@ -301,6 +310,25 @@ async function saveKey(key: string, clear: (value: string) => void, onChange: ()
 async function clearKey(onChange: () => Promise<void>, onError: (value: string | null) => void) {
   const result = await window.smartcursor.clearApiKey()
   if (!result.ok) onError(result.error || 'Could not remove the key.')
+  else {
+    onError(null)
+    await onChange()
+  }
+}
+
+async function saveOddsKey(key: string, clear: (value: string) => void, onChange: () => Promise<void>, onError: (value: string | null) => void) {
+  const result = await window.smartcursor.setOddsApiKey(key)
+  if (!result.ok) onError(result.error || 'Could not save the Odds API key.')
+  else {
+    clear('')
+    onError(null)
+    await onChange()
+  }
+}
+
+async function clearOddsKey(onChange: () => Promise<void>, onError: (value: string | null) => void) {
+  const result = await window.smartcursor.clearOddsApiKey()
+  if (!result.ok) onError(result.error || 'Could not remove the Odds API key.')
   else {
     onError(null)
     await onChange()

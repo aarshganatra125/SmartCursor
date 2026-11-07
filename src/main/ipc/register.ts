@@ -42,6 +42,14 @@ export function registerIpc(controller: AssistantController, database: AppDataba
     controller.clearApiKey()
     return { ok: true }
   })
+  handle(Ipc.oddsSecretSet, (_event, payload) => {
+    if (!isRecord(payload) || typeof payload.apiKey !== 'string') throw new Error('Missing Odds API key.')
+    return { ok: true, ...controller.setOddsApiKey(payload.apiKey) }
+  })
+  handle(Ipc.oddsSecretClear, () => {
+    controller.clearOddsApiKey()
+    return { ok: true }
+  })
   handle(Ipc.copyText, async (_event, payload) => {
     if (!isRecord(payload) || typeof payload.text !== 'string' || payload.text.length > 20_000) throw new Error('Nothing to copy.')
     await clipboard.writeText(payload.text)
@@ -53,6 +61,12 @@ export function registerIpc(controller: AssistantController, database: AppDataba
   handle(Ipc.aiCancel, () => {
     controller.cancel()
     return { ok: true }
+  })
+  handle(Ipc.voiceTranscribe, (_event, payload) => {
+    if (!isRecord(payload) || typeof payload.audio !== 'string' || typeof payload.mimeType !== 'string') throw new Error('Missing audio.')
+    if (payload.audio.length === 0 || payload.audio.length > 8_000_000) throw new Error('The recording is too large. Keep voice prompts under 30 seconds.')
+    if (!['audio/webm', 'audio/ogg', 'audio/mp4'].includes(payload.mimeType)) throw new Error('Unsupported audio format.')
+    return controller.transcribe(payload.audio, payload.mimeType)
   })
   handle(Ipc.actionApply, (_event, payload) => controller.apply(asApply(payload)))
   handle(Ipc.captureOcr, (_event, payload) => {

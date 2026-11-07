@@ -73,6 +73,9 @@ export const InsertIcon = () => (
 export const SendIcon = () => (
   <Icon size={16} strokeWidth={2}><path d="M12 19V5M6 11l6-6 6 6" /></Icon>
 )
+export const MicIcon = () => (
+  <Icon size={16} strokeWidth={2}><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M6 11a6 6 0 0 0 12 0M12 17v4M8.5 21h7" /></Icon>
+)
 export const StopIcon = () => (
   <Icon size={14}><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" /></Icon>
 )

@@ -105,6 +105,8 @@ export interface Bootstrap {
   mouseTrigger: MouseTriggerStatus
   hasApiKey: boolean
   apiKeyHint: string | null
+  hasOddsApiKey: boolean
+  oddsApiKeyHint: string | null
   shortcutRegistered: boolean
   shortcutError: string | null
   platform: string

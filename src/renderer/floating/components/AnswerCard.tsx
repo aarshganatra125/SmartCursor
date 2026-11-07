@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import type { ApplyMode, WebSource } from '@shared/types'
 import type { ActionMeta } from '../actions'
-import { CheckIcon, CopyIcon, GlobeIcon, InsertIcon, RetryIcon, SendIcon, StopIcon } from './icons'
+import { CheckIcon, CopyIcon, GlobeIcon, InsertIcon, MicIcon, RetryIcon, SendIcon, StopIcon } from './icons'
 
 const APPLY_LABEL: Record<Exclude<ApplyMode, 'clipboard'>, string> = {
   vscode: 'Apply',
@@ -157,6 +157,14 @@ export function Composer({
   onSubmit: () => void
 }) {
   const ref = useRef<HTMLTextAreaElement>(null)
+  const recorder = useRef<MediaRecorder | null>(null)
+  const stream = useRef<MediaStream | null>(null)
+  const chunks = useRef<Blob[]>([])
+  const stopTimer = useRef<number | null>(null)
+  const voiceBase = useRef('')
+  const [listening, setListening] = useState(false)
+  const [transcribing, setTranscribing] = useState(false)
+  const [voiceError, setVoiceError] = useState<string | null>(null)
 
   useEffect(() => {
     if (autoFocus) requestAnimationFrame(() => {
@@ -175,6 +183,86 @@ export function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 108)}px`
   }, [value])
 
+  useEffect(() => () => stopRecording({ discard: true }), [])
+
+  const toggleVoice = async () => {
+    if (listening) {
+      stopRecording()
+      return
+    }
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+      setVoiceError('Voice input is unavailable in this Electron build.')
+      return
+    }
+    setVoiceError(null)
+    voiceBase.current = value.trimEnd()
+    try {
+      const nextStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+      stream.current = nextStream
+      chunks.current = []
+      const mime = recorderMimeType()
+      const next = mime ? new MediaRecorder(nextStream, { mimeType: mime }) : new MediaRecorder(nextStream)
+      recorder.current = next
+      next.ondataavailable = (event) => {
+        if (event.data.size > 0) chunks.current.push(event.data)
+      }
+      next.onerror = () => setVoiceError('The microphone recording failed. Try again.')
+      next.onstop = () => {
+        releaseStream()
+        recorder.current = null
+        setListening(false)
+        const audio = new Blob(chunks.current, { type: next.mimeType || 'audio/webm' })
+        chunks.current = []
+        if (audio.size === 0) return
+        void transcribe(audio, next.mimeType || 'audio/webm')
+      }
+      next.start()
+      setListening(true)
+      stopTimer.current = window.setTimeout(() => stopRecording(), 30_000)
+    } catch {
+      releaseStream()
+      setVoiceError('Microphone access was denied or is unavailable. Allow it in macOS Privacy & Security, then try again.')
+    }
+  }
+
+  const stopRecording = ({ discard = false }: { discard?: boolean } = {}) => {
+    if (stopTimer.current) window.clearTimeout(stopTimer.current)
+    stopTimer.current = null
+    const active = recorder.current
+    if (!active || active.state === 'inactive') {
+      if (discard) releaseStream()
+      return
+    }
+    if (discard) {
+      active.onstop = () => { releaseStream(); recorder.current = null }
+      chunks.current = []
+    }
+    active.stop()
+  }
+
+  const releaseStream = () => {
+    stream.current?.getTracks().forEach((track) => track.stop())
+    stream.current = null
+  }
+
+  const transcribe = async (audio: Blob, rawMimeType: string) => {
+    setTranscribing(true)
+    try {
+      const result = await window.smartcursor.transcribe(await blobBase64(audio), normalizedMimeType(rawMimeType))
+      if (!result.ok) {
+        setVoiceError(result.error || 'Voice transcription failed. Try again.')
+        return
+      }
+      const prefix = voiceBase.current && result.text ? `${voiceBase.current} ` : voiceBase.current
+      onChange(`${prefix}${result.text.trimStart()}`)
+      requestAnimationFrame(() => ref.current?.focus())
+    } catch {
+      setVoiceError('Voice transcription failed. Try again.')
+    } finally {
+      setTranscribing(false)
+    }
+  }
+
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       event.preventDefault()
@@ -183,21 +271,52 @@ export function Composer({
   }
 
   return (
-    <div className="sc-composer">
-      <textarea
-        ref={ref}
-        rows={1}
-        value={value}
-        placeholder={placeholder}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={onKeyDown}
-        spellCheck
-      />
-      <button type="button" className="sc-send" disabled={disabled || !value.trim()} onClick={onSubmit} aria-label="Send">
-        <SendIcon />
-      </button>
+    <div className="sc-composer-wrap">
+      <div className="sc-composer">
+        <textarea
+          ref={ref}
+          rows={1}
+          value={value}
+          placeholder={placeholder}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={onKeyDown}
+          spellCheck
+        />
+        <button type="button" className={`sc-mic ${listening || transcribing ? 'is-listening' : ''}`} disabled={disabled || transcribing} onClick={() => void toggleVoice()} aria-label={listening ? 'Stop voice input' : 'Start voice input'} title={listening ? 'Stop recording' : transcribing ? 'Transcribing…' : 'Speak your prompt'}>
+          <MicIcon />
+        </button>
+        <button type="button" className="sc-send" disabled={disabled || !value.trim()} onClick={onSubmit} aria-label="Send">
+          <SendIcon />
+        </button>
+      </div>
+      {voiceError && <p className="sc-voice-error" role="status">{voiceError}</p>}
     </div>
   )
+}
+
+function recorderMimeType(): string | null {
+  return ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+    .find((mime) => MediaRecorder.isTypeSupported(mime)) ?? null
+}
+
+function normalizedMimeType(mime: string): 'audio/webm' | 'audio/ogg' | 'audio/mp4' {
+  if (mime.startsWith('audio/ogg')) return 'audio/ogg'
+  if (mime.startsWith('audio/mp4')) return 'audio/mp4'
+  return 'audio/webm'
+}
+
+function blobBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error)
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : ''
+      const encoded = result.split(',', 2)[1]
+      if (encoded) resolve(encoded)
+      else reject(new Error('Could not read recording.'))
+    }
+    reader.readAsDataURL(blob)
+  })
 }
 
 function FootButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {

@@ -7,15 +7,18 @@ import type { ConversationManager } from './ConversationManager'
 import type { SecureStore } from './SecureStore'
 import type { SessionStore } from './SessionStore'
 import type { SettingsManager } from './SettingsManager'
+import type { SportsService } from './SportsService'
 
 const GEMINI_ROOT = 'https://generativelanguage.googleapis.com/v1beta'
+const TRANSCRIBE_MODEL = 'gemini-3.5-transcribe'
 
 export class AIService {
   constructor(
     private secure: SecureStore,
     private settings: SettingsManager,
     private conversations: ConversationManager,
-    private sessions: SessionStore
+    private sessions: SessionStore,
+    private scores: SportsService
   ) {}
 
   async run(request: RunRequest, onDelta: (delta: string) => void, signal: AbortSignal): Promise<AiResult> {
@@ -24,6 +27,18 @@ export class AIService {
     if (!session) return { ok: false, requestId, text: '', insertText: '', error: 'This assistant session is no longer open.' }
     if (request.action === 'ask' && !request.instruction.trim()) {
       return { ok: false, requestId, text: '', insertText: '', error: 'Enter an instruction first.' }
+    }
+    // Live scores use the dedicated provider rather than Gemini Search. This keeps score lookups
+    // available even when the Gemini Search-grounding quota is exhausted.
+    if (request.action === 'ask') {
+      const score = await this.scores.answer(request.instruction, signal)
+      if (score.handled) {
+        if (score.error) return { ok: false, requestId, text: '', insertText: '', error: score.error }
+        const text = score.text ?? ''
+        onDelta(text)
+        this.storeTurn(request.conversationId, request.action, request.instruction, text)
+        return { ok: true, requestId, text, insertText: '', sources: [], searchQueries: [] }
+      }
     }
     const apiKey = this.secure.read()
     if (!apiKey) {
@@ -58,20 +73,56 @@ export class AIService {
         onDelta
       })
       const insertText = extractInsertable(text)
-      const now = Date.now()
-      const turns = [
-        ...session.turns,
-        { role: 'user' as const, content: buildTurnSummary(request.action, request.instruction), createdAt: now },
-        { role: 'assistant' as const, content: text, createdAt: now }
-      ].slice(-LIMITS.historyMessages)
-      this.sessions.update(request.conversationId, { response: text, insertText, turns })
-      this.conversations.append(request.conversationId, 'user', request.instruction.trim() || request.action, request.action)
-      this.conversations.append(request.conversationId, 'assistant', text, request.action)
+      this.storeTurn(request.conversationId, request.action, request.instruction, text, insertText)
       return { ok: true, requestId, text, insertText, sources, searchQueries }
     } catch (error) {
       if (signal.aborted) return { ok: false, requestId, text: '', insertText: '', error: 'Cancelled.' }
-      return { ok: false, requestId, text: '', insertText: '', error: explainAiError(error) }
+      return { ok: false, requestId, text: '', insertText: '', error: explainAiError(error, { usesGoogleSearch: search }) }
     }
+  }
+
+  /** Transcribe one user-initiated microphone recording. Audio is never written to disk. */
+  async transcribe(audio: string, mimeType: string): Promise<{ ok: boolean; text: string; error?: string }> {
+    const apiKey = this.secure.read()
+    if (!apiKey) return { ok: false, text: '', error: 'Add a Gemini API key in Settings before using voice input.' }
+    const root = (this.settings.get().baseUrl || GEMINI_ROOT).replace(/\/$/, '')
+    try {
+      const response = await fetch(`${root}/models/${TRANSCRIBE_MODEL}:generateContent`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
+        body: JSON.stringify({
+          contents: [{
+            role: 'user',
+            parts: [
+              { text: 'Transcribe this spoken SmartCursor prompt. Return only the transcription, with no commentary.' },
+              { inline_data: { mime_type: mimeType, data: audio } }
+            ]
+          }],
+          generationConfig: { temperature: 0 }
+        }),
+        signal: AbortSignal.timeout(35_000)
+      })
+      if (!response.ok) throw new GeminiError(response.status, await geminiErrorMessage(response))
+      const text = parsePayload(await response.json() as unknown).text.trim()
+      if (!text) return { ok: false, text: '', error: 'No speech was recognized. Try speaking a little closer to the microphone.' }
+      return { ok: true, text }
+    } catch (error) {
+      return { ok: false, text: '', error: explainAiError(error) }
+    }
+  }
+
+  private storeTurn(conversationId: string, action: ActionKind, instruction: string, text: string, insertText = ''): void {
+    const session = this.sessions.get(conversationId)
+    if (!session) return
+    const now = Date.now()
+    const turns = [
+      ...session.turns,
+      { role: 'user' as const, content: buildTurnSummary(action, instruction), createdAt: now },
+      { role: 'assistant' as const, content: text, createdAt: now }
+    ].slice(-LIMITS.historyMessages)
+    this.sessions.update(conversationId, { response: text, insertText, turns })
+    this.conversations.append(conversationId, 'user', instruction.trim() || action, action)
+    this.conversations.append(conversationId, 'assistant', text, action)
   }
 
   /** Ghost cursor: ask Gemini where a control is on a screenshot of one display. */
@@ -195,7 +246,7 @@ async function streamGemini(input: {
 }
 
 interface GeminiCandidate {
-  content?: { parts?: Array<{ text?: string; thought?: boolean }> }
+  content?: { parts?: Array<{ text?: string; thought?: boolean; audioTranscription?: { text?: unknown } }> }
   groundingMetadata?: {
     webSearchQueries?: unknown
     groundingChunks?: Array<{ web?: { uri?: unknown; title?: unknown } }>
@@ -203,7 +254,7 @@ interface GeminiCandidate {
 }
 
 /** Pull answer text plus any Google Search grounding out of one response (or one SSE chunk). */
-function parsePayload(parsed: unknown): { text: string; sources: WebSource[]; searchQueries: string[] } {
+export function parsePayload(parsed: unknown): { text: string; sources: WebSource[]; searchQueries: string[] } {
   const items = Array.isArray(parsed) ? parsed : [parsed]
   let text = ''
   const sources: WebSource[] = []
@@ -214,6 +265,7 @@ function parsePayload(parsed: unknown): { text: string; sources: WebSource[]; se
     for (const candidate of candidates) {
       for (const part of candidate.content?.parts ?? []) {
         if (part.text && !part.thought) text += part.text
+        else if (typeof part.audioTranscription?.text === 'string') text += part.audioTranscription.text
       }
       const grounding = candidate.groundingMetadata
       for (const chunk of grounding?.groundingChunks ?? []) {
@@ -230,7 +282,7 @@ function parsePayload(parsed: unknown): { text: string; sources: WebSource[]; se
   return { text, sources, searchQueries }
 }
 
-class GeminiError extends Error {
+export class GeminiError extends Error {
   constructor(readonly status: number, message: string) {
     super(message)
   }
@@ -245,12 +297,17 @@ async function geminiErrorMessage(response: Response): Promise<string> {
   }
 }
 
-function explainAiError(error: unknown): string {
+export function explainAiError(error: unknown, options: { usesGoogleSearch?: boolean } = {}): string {
   if (error instanceof GeminiError) {
     if (error.status === 400) return `Gemini rejected the request. ${error.message}`.slice(0, 300)
     if (error.status === 401 || error.status === 403) return 'The Gemini API key was rejected. Check it in Settings.'
     if (error.status === 404) return 'That Gemini model was not found. Choose another model in Settings.'
-    if (error.status === 429 || error.status === 503) return 'Gemini is busy right now. Wait a moment and retry.'
+    if (error.status === 429) {
+      return options.usesGoogleSearch
+        ? 'Google Search grounding reached its Gemini rate limit or quota. Live scores need search; check usage and billing in Google AI Studio, then retry after the limit resets.'
+        : 'Gemini reached a rate limit or quota. Check usage and billing in Google AI Studio, then retry after the limit resets.'
+    }
+    if (error.status === 503) return 'Gemini is temporarily unavailable. Wait a moment and retry.'
     return error.message.slice(0, 300)
   }
   if (error instanceof Error) return error.message.slice(0, 300)

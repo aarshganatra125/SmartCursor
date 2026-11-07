@@ -22,6 +22,7 @@ import { type LiveSession, SessionStore } from './SessionStore'
 import type { SettingsManager } from './SettingsManager'
 import type { ChromeIntegration } from './ChromeIntegration'
 import type { MouseTriggerService } from './MouseTriggerService'
+import type { SportsService } from './SportsService'
 
 export class AssistantController {
   private opening = false
@@ -44,6 +45,7 @@ export class AssistantController {
     private sessions: SessionStore,
     private settings: SettingsManager,
     private secure: SecureStore,
+    private scores: SportsService,
     private permissions: PermissionManager,
     private integrations: IntegrationServer,
     private ai: AIService,
@@ -144,6 +146,8 @@ export class AssistantController {
       mouseTrigger: this.mouse.status(),
       hasApiKey: this.secure.hasApiKey(),
       apiKeyHint: this.secure.hint(),
+      hasOddsApiKey: this.scores.hasApiKey(),
+      oddsApiKeyHint: this.scores.hint(),
       shortcutRegistered: shortcut.registered,
       shortcutError: shortcut.error,
       platform: process.platform,
@@ -179,6 +183,15 @@ export class AssistantController {
     this.secure.clear()
   }
 
+  setOddsApiKey(key: string): { hint: string | null } {
+    this.scores.setApiKey(key)
+    return { hint: this.scores.hint() }
+  }
+
+  clearOddsApiKey(): void {
+    this.scores.clearApiKey()
+  }
+
   async run(request: RunRequest, onDelta: (delta: string) => void): Promise<Awaited<ReturnType<AIService['run']>>> {
     const controller = new AbortController()
     const requestId = randomUUID()
@@ -192,6 +205,10 @@ export class AssistantController {
 
   cancel(): void {
     for (const controller of this.runs.values()) controller.abort()
+  }
+
+  transcribe(audio: string, mimeType: string) {
+    return this.ai.transcribe(audio, mimeType)
   }
 
   async apply(request: ApplyRequest) {

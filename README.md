@@ -15,6 +15,8 @@ The menu-bar icon opens the assistant. The default shortcut is **⌘⇧Space** o
 
 The assistant is a small toolbar that opens at the pointer, like a right-click menu. The lead action depends on the app (Explain in editors and browsers, Reply in mail, Polish in documents). Press **Enter** for it, **1–5** for the others, or just start typing to ask a question. On macOS you can also hold **Shift and right-click** (or Shift + two-finger click) anywhere to open it at that spot; that click is not passed to the app underneath. Turn this off in Settings → General. Clicking anywhere else closes it.
 
+The mic beside the prompt records only after you click it. Click again to stop; SmartCursor sends that short clip to Gemini for transcription, puts the text in the prompt, and discards the audio. It never submits the spoken prompt automatically.
+
 **Show me where** (the target button, or press `?`): ask “where do I export as PDF?” and a ghost pointer glides to that control on the screen you are on and circles it. It captures that one display (Screen Recording permission), asks Gemini where the control is, and never clicks for you.
 
 Free-form questions (**Ask**) may use Google Search, so “what's the Man City score?” gets a live answer with source links. Gemini 3 models include 5,000 searches a month free; after that Google bills per search. **⋯** shows the context that will be sent and lets you read the window or screen.
