@@ -45,9 +45,9 @@ export function Pill({
           <span>{primary.chip}</span>
         </button>
       ) : (
-        <button type="button" className={`sc-chip ${askOpen && !pointOpen ? 'is-active' : ''}`} onClick={onAsk} title="Ask anything · /">
+        <button type="button" className={`sc-chip sc-ask-chip ${askOpen && !pointOpen ? 'is-active' : ''}`} onClick={onAsk} title="Ask · /">
           <Logo busy={busy} />
-          <span>Ask anything</span>
+          <span>Ask</span>
         </button>
       )}
       <span className="sc-divider" />

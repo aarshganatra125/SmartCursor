@@ -83,12 +83,13 @@ export const GearIcon = () => (
   <Icon size={15}><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" /></Icon>
 )
 
-/** SmartCursor mark: a pointer on a gradient tile. The gradient turns while a request runs. */
+/** SmartCursor mark: two interlocking, rounded workspaces. */
 export function Logo({ busy }: { busy?: boolean }) {
   return (
     <span className={`sc-logo ${busy ? 'sc-logo-busy' : ''}`} aria-hidden="true">
-      <svg width="13" height="13" viewBox="0 0 24 24">
-        <path d="M5 3.5 19 11l-6.2 1.8L9.6 19 5 3.5Z" fill="white" stroke="white" strokeWidth="1.5" strokeLinejoin="round" />
+      <svg width="19" height="19" viewBox="0 0 24 24" fill="none">
+        <path d="M10.25 16H8a4 4 0 0 1-4-4V8a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2" />
+        <path d="M13.75 8H16a4 4 0 0 1 4 4v4a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4v-4a4 4 0 0 1 4-4Z" />
       </svg>
     </span>
   )
