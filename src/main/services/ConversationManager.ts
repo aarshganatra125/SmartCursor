@@ -39,15 +39,6 @@ export class ConversationManager {
     this.db.touchConversation(conversationId, Date.now())
   }
 
-  history(conversationId: string): HistoryMessage[] {
-    if (!this.settings.get().privacy.storeHistory) return []
-    return this.db.listMessages(conversationId).map((message) => ({
-      role: message.role === 'assistant' ? 'assistant' : 'user',
-      content: message.content,
-      createdAt: message.createdAt
-    }))
-  }
-
   list(limit = 50): HistoryItem[] {
     return this.db.listConversations(limit).map((conversation) => {
       const messages = this.db.listMessages(conversation.id).map((message) => ({

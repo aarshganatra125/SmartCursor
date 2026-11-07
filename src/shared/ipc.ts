@@ -2,6 +2,7 @@ export const Ipc = {
   bootstrap: 'bootstrap:get',
   panelHide: 'panel:hide',
   panelCurrent: 'panel:current',
+  panelResize: 'panel:resize',
   settingsUpdate: 'settings:update',
   settingsOpen: 'settings:open',
   secretSet: 'secret:set',
@@ -22,7 +23,10 @@ export const Ipc = {
   tokenRotate: 'integrations:rotate-token',
   themeChanged: 'theme:changed',
   integrationsChanged: 'integrations:changed',
-  panelOpen: 'panel:open'
+  panelOpen: 'panel:open',
+  ghostRun: 'ghost:run',
+  ghostShow: 'ghost:show',
+  openLink: 'link:open'
 } as const
 
 export type IpcChannel = (typeof Ipc)[keyof typeof Ipc]
@@ -31,6 +35,7 @@ export const ALLOWED_INVOKE = new Set<string>([
   Ipc.bootstrap,
   Ipc.panelHide,
   Ipc.panelCurrent,
+  Ipc.panelResize,
   Ipc.settingsUpdate,
   Ipc.settingsOpen,
   Ipc.secretSet,
@@ -47,5 +52,7 @@ export const ALLOWED_INVOKE = new Set<string>([
   Ipc.permissionsOpen,
   Ipc.permissionsRefresh,
   Ipc.shortcutSet,
-  Ipc.tokenRotate
+  Ipc.tokenRotate,
+  Ipc.ghostRun,
+  Ipc.openLink
 ])

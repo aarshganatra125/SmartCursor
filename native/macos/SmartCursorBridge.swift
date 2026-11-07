@@ -160,6 +160,111 @@ func recognize(_ path: String) -> [String: Any] {
     }
 }
 
+// MARK: - Shift + right-click trigger
+
+// Event-tap callbacks are C function pointers and cannot capture state, so it lives in globals.
+var mouseTap: CFMachPort?
+var swallowingRightClick = false
+// Toggled by the parent over stdin ("trigger on|off", "clicks on|off").
+// Clicks are only reported while a ghost-cursor guide is waiting for the user.
+var triggerEnabled = true
+var clicksEnabled = false
+
+/// Only Shift may be held. Command, Control or Option + right-click stay with the app.
+func isTriggerFlags(_ flags: CGEventFlags) -> Bool {
+    flags.contains(.maskShift)
+        && !flags.contains(.maskCommand)
+        && !flags.contains(.maskControl)
+        && !flags.contains(.maskAlternate)
+}
+
+let mouseCallback: CGEventTapCallBack = { _, type, event, _ in
+    switch type {
+    case .tapDisabledByTimeout, .tapDisabledByUserInput:
+        // macOS switches a tap off if a callback is slow; switch it back on.
+        if let tap = mouseTap { CGEvent.tapEnable(tap: tap, enable: true) }
+        return Unmanaged.passUnretained(event)
+    case .leftMouseDown:
+        // Listen only: the click always reaches the app.
+        if clicksEnabled {
+            let point = event.location
+            emit(["event": "click", "x": NSNumber(value: Double(point.x)), "y": NSNumber(value: Double(point.y))])
+        }
+        return Unmanaged.passUnretained(event)
+    case .rightMouseDown:
+        if triggerEnabled && isTriggerFlags(event.flags) {
+            swallowingRightClick = true
+            let point = event.location
+            emit(["event": "trigger", "x": NSNumber(value: Double(point.x)), "y": NSNumber(value: Double(point.y))])
+            // Returning nil keeps the click from the app, so its own context menu does not open.
+            return nil
+        }
+        return Unmanaged.passUnretained(event)
+    case .rightMouseUp:
+        if swallowingRightClick {
+            swallowingRightClick = false
+            return nil
+        }
+        return Unmanaged.passUnretained(event)
+    default:
+        return Unmanaged.passUnretained(event)
+    }
+}
+
+/// Runs until the parent closes stdin. Prints one JSON line per event.
+func watchMouse() -> Never {
+    guard isTrusted() else {
+        emit(["event": "error", "error": "accessibility-denied"])
+        exit(2)
+    }
+    let mask = (CGEventMask(1) << CGEventType.rightMouseDown.rawValue)
+        | (CGEventMask(1) << CGEventType.rightMouseUp.rawValue)
+        | (CGEventMask(1) << CGEventType.leftMouseDown.rawValue)
+    guard let tap = CGEvent.tapCreate(
+        tap: .cgSessionEventTap,
+        place: .headInsertEventTap,
+        options: .defaultTap,
+        eventsOfInterest: mask,
+        callback: mouseCallback,
+        userInfo: nil
+    ) else {
+        emit(["event": "error", "error": "tap-unavailable"])
+        exit(2)
+    }
+    mouseTap = tap
+    let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+    CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
+    CGEvent.tapEnable(tap: tap, enable: true)
+
+    // Commands arrive one per line on stdin. When SmartCursor quits or crashes, stdin closes;
+    // exit then so no helper is left behind.
+    DispatchQueue.global(qos: .utility).async {
+        var pending = ""
+        while true {
+            let data = FileHandle.standardInput.availableData
+            if data.isEmpty { exit(0) }
+            pending += String(decoding: data, as: UTF8.self)
+            while let newline = pending.firstIndex(of: "\n") {
+                let line = pending[..<newline].trimmingCharacters(in: .whitespaces)
+                pending = String(pending[pending.index(after: newline)...])
+                DispatchQueue.main.async {
+                    switch line {
+                    case "trigger on": triggerEnabled = true
+                    case "trigger off": triggerEnabled = false
+                    case "clicks on": clicksEnabled = true
+                    case "clicks off": clicksEnabled = false
+                    default: break
+                    }
+                }
+            }
+        }
+    }
+
+    emit(["event": "ready"])
+    CFRunLoopRun()
+    exit(0)
+}
+
 let arguments = CommandLine.arguments
 guard arguments.count >= 2 else {
     emit(["ok": boolValue(false), "error": "usage"])
@@ -182,6 +287,8 @@ case "activate":
     emit(activateApp(arguments.count > 2 ? arguments[2] : ""))
 case "ocr":
     emit(recognize(arguments.count > 2 ? arguments[2] : ""))
+case "watch-mouse":
+    watchMouse()
 default:
     emit(["ok": boolValue(false), "error": "unknown-command"])
     exit(1)

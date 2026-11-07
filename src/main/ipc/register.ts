@@ -1,4 +1,4 @@
-import { clipboard, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { clipboard, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { ALLOWED_INVOKE, Ipc } from '@shared/ipc'
 import type { ApplyRequest, RunRequest, SettingsData } from '@shared/types'
 import { errorMessage } from '../errors'
@@ -23,6 +23,12 @@ export function registerIpc(controller: AssistantController, database: AppDataba
     return { ok: true }
   })
   handle(Ipc.panelCurrent, () => controller.current())
+  handle(Ipc.panelResize, (_event, payload) => {
+    if (!isRecord(payload) || typeof payload.width !== 'number' || typeof payload.height !== 'number') throw new Error('Missing size.')
+    if (!Number.isFinite(payload.width) || !Number.isFinite(payload.height)) throw new Error('Invalid size.')
+    controller.resize(payload.width, payload.height)
+    return { ok: true }
+  })
   handle(Ipc.settingsOpen, () => {
     controller.openSettings()
     return { ok: true }
@@ -58,6 +64,18 @@ export function registerIpc(controller: AssistantController, database: AppDataba
     if (!isRecord(payload) || typeof payload.conversationId !== 'string') throw new Error('Missing session.')
     return controller.fetchPage(payload.conversationId)
   })
+  handle(Ipc.ghostRun, (_event, payload) => {
+    if (!isRecord(payload) || typeof payload.conversationId !== 'string' || typeof payload.query !== 'string') throw new Error('Missing question.')
+    return controller.ghost(payload.conversationId, payload.query)
+  })
+  handle(Ipc.openLink, async (_event, payload) => {
+    // Only web links from search results; never file:, javascript: or custom schemes.
+    if (!isRecord(payload) || typeof payload.url !== 'string') throw new Error('Missing link.')
+    const url = new URL(payload.url)
+    if (url.protocol !== 'https:') throw new Error('Only https links can be opened.')
+    await shell.openExternal(url.toString())
+    return { ok: true }
+  })
   handle(Ipc.historyList, () => controller.history())
   handle(Ipc.historyDelete, (_event, payload) => {
     const id = isRecord(payload) && typeof payload.id === 'string' ? payload.id : undefined
@@ -92,6 +110,7 @@ function asSettingsPatch(payload: unknown): Partial<SettingsData> {
   if (payload.theme === 'system' || payload.theme === 'light' || payload.theme === 'dark') patch.theme = payload.theme
   if (typeof payload.model === 'string') patch.model = payload.model
   if (typeof payload.shortcut === 'string') patch.shortcut = payload.shortcut
+  if (typeof payload.mouseTrigger === 'boolean') patch.mouseTrigger = payload.mouseTrigger
   if (typeof payload.baseUrl === 'string') patch.baseUrl = payload.baseUrl
   if (isRecord(payload.integrations)) {
     patch.integrations = {

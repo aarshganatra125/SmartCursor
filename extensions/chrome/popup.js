@@ -1,7 +1,7 @@
 const status = document.getElementById('status')
 chrome.storage.local.get(['baseUrl', 'token']).then(async (stored) => {
   if (!stored.baseUrl || !stored.token) {
-    status.textContent = 'Not paired. Open options and paste the token from the desktop app.'
+    status.textContent = 'Not paired. Open Pairing options and paste the pairing code from SmartCursor Settings.'
     return
   }
   try {

@@ -1,4 +1,4 @@
-import type { ApplyMode, ContextSnapshot } from '@shared/types'
+import type { ApplyMode, ContextSnapshot, HistoryMessage } from '@shared/types'
 
 export interface LiveSession {
   snapshot: ContextSnapshot
@@ -6,13 +6,24 @@ export interface LiveSession {
   insertText: string
   directApply: ApplyMode
   applyBlockedReason?: string
+  /** Turns for follow-up questions. Kept in memory so follow-ups work even when history storage is off. */
+  turns: HistoryMessage[]
 }
+
+/** Every popup opens a session; keep only the most recent few so a long-running menu-bar app does not grow. */
+const MAX_SESSIONS = 12
 
 export class SessionStore {
   private sessions = new Map<string, LiveSession>()
 
   set(id: string, session: LiveSession): void {
+    this.sessions.delete(id)
     this.sessions.set(id, session)
+    while (this.sessions.size > MAX_SESSIONS) {
+      const oldest = this.sessions.keys().next().value
+      if (oldest === undefined) break
+      this.sessions.delete(oldest)
+    }
   }
 
   get(id: string): LiveSession | null {

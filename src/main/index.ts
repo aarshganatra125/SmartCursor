@@ -24,6 +24,7 @@ import { DesktopWindowManager } from './services/DesktopWindowManager'
 import { GlobalShortcutManager } from './services/GlobalShortcutManager'
 import { ActionExecutionService } from './services/ActionExecutionService'
 import { AssistantController } from './services/AssistantController'
+import { MouseTriggerService } from './services/MouseTriggerService'
 
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals')
 app.setName('SmartCursor')
@@ -36,9 +37,11 @@ app.on('second-instance', () => {
   gateway.settings()
 })
 
-const gateway: { open: () => void; settings: () => void; windows: DesktopWindowManager | null } = {
+const gateway: { open: () => void; openAtPointer: () => void; settings: () => void; hidden: () => void; windows: DesktopWindowManager | null } = {
   open: () => undefined,
+  openAtPointer: () => undefined,
   settings: () => undefined,
+  hidden: () => undefined,
   windows: null
 }
 
@@ -61,21 +64,30 @@ app.whenReady().then(async () => {
   const ai = new AIService(secure, settings, conversations, sessions)
   const windows = new DesktopWindowManager({
     openAssistant: () => gateway.open(),
-    openSettings: () => gateway.settings()
+    openSettings: () => gateway.settings(),
+    onFloatingHidden: () => gateway.hidden()
   })
   gateway.windows = windows
   const shortcuts = new GlobalShortcutManager(settings, () => gateway.open())
   const actions = new ActionExecutionService(bridge, chrome, vscode, windows)
+  const mouse = new MouseTriggerService(bridge, settings, () => gateway.openAtPointer())
   const controller = new AssistantController(
     windows, shortcuts, context, conversations, sessions, settings, secure,
-    permissions, integrations, ai, actions, screenshots, ocr, chrome
+    permissions, integrations, ai, actions, screenshots, ocr, chrome, mouse
   )
   gateway.open = () => void controller.open()
   gateway.settings = () => controller.openSettings()
+  gateway.hidden = () => controller.cancel()
+  // A Shift + right-click elsewhere moves the popup there instead of toggling it off.
+  gateway.openAtPointer = () => void controller.open({ toggle: false })
+  integrations.onOpenRequest((client, context) => {
+    void controller.open({ toggle: false, prefill: context ? { client, context } : undefined })
+  })
 
   windows.setTheme(settings.get().theme)
   windows.create()
   shortcuts.register()
+  mouse.sync()
   registerIpc(controller, database)
   integrations.onChange(() => windows.broadcast(Ipc.integrationsChanged, integrations.snapshot()))
   nativeTheme.on('updated', () => windows.broadcast(Ipc.themeChanged, windows.resolvedTheme()))
@@ -92,6 +104,7 @@ app.whenReady().then(async () => {
   app.on('will-quit', () => {
     globalShortcut.unregisterAll()
     integrations.stop()
+    mouse.stop()
     database.close()
     void ocr.dispose()
   })

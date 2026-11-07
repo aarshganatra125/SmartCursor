@@ -27,6 +27,7 @@ button, input, textarea, a, label, pre, p {
 
 button, textarea, input {
   font: inherit;
+  cursor: default;
 }
 
 .drag {
@@ -35,15 +36,6 @@ button, textarea, input {
 
 .no-drag {
   -webkit-app-region: no-drag;
-}
-
-@keyframes rise {
-  from { opacity: 0; transform: translateY(8px) scale(0.985); }
-  to { opacity: 1; transform: none; }
-}
-
-.panel-rise {
-  animation: rise 160ms ease-out;
 }
 
 ::-webkit-scrollbar {

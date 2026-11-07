@@ -1,4 +1,5 @@
 const ALARM = 'smartcursor-poll'
+const MENU = 'smartcursor-ask'
 
 async function config() {
   const stored = await chrome.storage.local.get(['baseUrl', 'token'])
@@ -6,10 +7,19 @@ async function config() {
   return { baseUrl: String(stored.baseUrl).replace(/\/$/, ''), token: String(stored.token) }
 }
 
+function headers(cfg) {
+  return { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json', 'X-SmartCursor-Client': 'chrome' }
+}
+
+function readableTab(tab) {
+  return Boolean(tab?.id) && !/^(chrome|chrome-extension|edge|about|devtools|view-source):/.test(tab.url ?? '')
+}
+
 async function requestContext(tabId, includePage) {
   try {
     return await chrome.tabs.sendMessage(tabId, { type: 'get-context', includePage: Boolean(includePage) })
   } catch {
+    // Tabs opened before the extension was installed or reloaded have no content script yet.
     const [injected] = await chrome.scripting.executeScript({
       target: { tabId },
       func: (include) => {
@@ -62,9 +72,7 @@ async function insertIntoTab(tabId, text) {
 
 async function handleAction(action) {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true })
-  if (!tab?.id || tab.url?.startsWith('chrome://') || tab.url?.startsWith('chrome-extension://')) {
-    return { ok: false, error: 'This page cannot be read by the extension.' }
-  }
+  if (!readableTab(tab)) return { ok: false, error: 'This page cannot be read by the extension.' }
   if (action.type === 'request-context') {
     const context = await requestContext(tab.id, action.includePage)
     if (!context) return { ok: false, error: 'No page context was available.' }
@@ -80,47 +88,87 @@ async function handleAction(action) {
 async function postResult(cfg, id, result) {
   await fetch(`${cfg.baseUrl}/v1/result?client=chrome`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${cfg.token}`,
-      'Content-Type': 'application/json',
-      'X-SmartCursor-Client': 'chrome'
-    },
+    headers: headers(cfg),
     body: JSON.stringify({ id, ok: Boolean(result.ok), error: result.error, context: result.context })
   })
 }
 
-let polling = false
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+let polling = false
+let failures = 0
+
+/** Long-poll the desktop app for work. Backs off when it is down or rejects the token. */
 async function poll() {
   if (polling) return
   const cfg = await config()
   if (!cfg) return
   polling = true
+  let wait = 0
   try {
-    const response = await fetch(`${cfg.baseUrl}/v1/actions?client=chrome`, {
-      headers: { Authorization: `Bearer ${cfg.token}`, 'X-SmartCursor-Client': 'chrome' }
-    })
-    if (!response.ok) return
+    const response = await fetch(`${cfg.baseUrl}/v1/actions?client=chrome`, { headers: headers(cfg) })
+    if (response.status === 401 || response.status === 403) {
+      // Wrong token or the integration is switched off. Waiting avoids hammering the app.
+      wait = 15000
+      return
+    }
+    if (!response.ok) {
+      wait = 3000
+      return
+    }
+    failures = 0
     const payload = await response.json()
     if (payload.action?.id) {
       const result = await handleAction(payload.action).catch((error) => ({ ok: false, error: error instanceof Error ? error.message : 'Extension action failed.' }))
       await postResult(cfg, payload.action.id, result)
     }
   } catch {
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    failures += 1
+    wait = Math.min(1000 * 2 ** Math.min(failures, 4), 15000)
   } finally {
     polling = false
-    setTimeout(() => void poll(), 50)
+    setTimeout(() => void poll(), wait || 30)
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create(ALARM, { periodInMinutes: 1 })
+/** Right-click → "Ask SmartCursor": send what is selected and open the popup at the pointer. */
+async function askFromMenu(info, tab) {
+  const cfg = await config()
+  if (!cfg) {
+    await chrome.runtime.openOptionsPage()
+    return
+  }
+  let context = { selection: info.selectionText ?? '', url: tab?.url ?? '', title: tab?.title ?? '' }
+  if (readableTab(tab)) {
+    const read = await requestContext(tab.id, false).catch(() => null)
+    if (read && (read.selection || !context.selection)) context = { ...context, ...read }
+  }
+  await fetch(`${cfg.baseUrl}/v1/open?client=chrome`, {
+    method: 'POST',
+    headers: headers(cfg),
+    body: JSON.stringify({ context })
+  }).catch(() => undefined)
+}
+
+function setup() {
+  // 30 seconds is the shortest alarm Chrome allows; it revives the worker if Chrome stopped it.
+  chrome.alarms.create(ALARM, { periodInMinutes: 0.5 })
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({ id: MENU, title: 'Ask SmartCursor', contexts: ['selection', 'editable', 'page', 'link', 'image'] })
+  })
   void poll()
-})
-chrome.runtime.onStartup.addListener(() => void poll())
+}
+
+chrome.runtime.onInstalled.addListener(setup)
+chrome.runtime.onStartup.addListener(setup)
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === ALARM) void poll()
 })
-chrome.storage.onChanged.addListener(() => void poll())
+chrome.contextMenus.onClicked.addListener((info, tab) => {
+  if (info.menuItemId === MENU) void askFromMenu(info, tab)
+})
+chrome.storage.onChanged.addListener(() => {
+  failures = 0
+  void poll()
+})
 void poll()

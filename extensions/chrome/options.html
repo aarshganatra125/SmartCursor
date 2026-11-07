@@ -2,22 +2,30 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>SmartCursor</title>
+    <title>Connect SmartCursor</title>
     <style>
-      body { font: 14px -apple-system, sans-serif; margin: 32px; max-width: 520px; color: #18181b; }
-      label { display: block; margin-top: 16px; font-weight: 600; }
-      input { width: 100%; margin-top: 6px; padding: 8px 10px; border: 1px solid #d4d4d8; border-radius: 10px; }
-      button { margin-top: 16px; border: 0; border-radius: 999px; background: #18181b; color: white; padding: 8px 14px; }
-      p { color: #52525b; line-height: 1.45; }
+      :root { color-scheme: light dark; --text: #18181b; --muted: #52525b; --line: #d4d4d8; --bg: #ffffff; --button: #18181b; --button-text: #ffffff; }
+      @media (prefers-color-scheme: dark) {
+        :root { --text: #f4f4f5; --muted: #a1a1aa; --line: #3f3f46; --bg: #18181b; --button: #f4f4f5; --button-text: #18181b; }
+      }
+      body { font: 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 40px auto; max-width: 520px; padding: 0 16px; color: var(--text); background: var(--bg); }
+      h1 { font-size: 20px; letter-spacing: -0.01em; }
+      label { display: block; margin-top: 18px; font-weight: 600; }
+      input { box-sizing: border-box; width: 100%; margin-top: 6px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; font: 13px ui-monospace, Menlo, monospace; background: transparent; color: inherit; }
+      button { margin-top: 14px; border: 0; border-radius: 999px; background: var(--button); color: var(--button-text); padding: 8px 16px; font: inherit; font-weight: 600; }
+      p { color: var(--muted); line-height: 1.5; }
+      #status { min-height: 1.5em; }
+      #status.ok { color: #16a34a; }
+      #status.bad { color: #dc2626; }
     </style>
   </head>
   <body>
     <h1>Connect SmartCursor</h1>
-    <p>Copy the local address and pairing token from SmartCursor Settings → Integrations. The extension only talks to 127.0.0.1.</p>
-    <label>Local address<input id="baseUrl" placeholder="http://127.0.0.1:17645" /></label>
-    <label>Pairing token<input id="token" type="password" /></label>
-    <button id="save" type="button">Save</button>
+    <p>In the SmartCursor desktop app, open Settings → Integrations and click <strong>Copy pairing code</strong>. Paste it here. The extension only talks to 127.0.0.1 on this computer.</p>
+    <label>Pairing code<input id="code" placeholder="http://127.0.0.1:17645#…" autocomplete="off" spellcheck="false" /></label>
+    <button id="save" type="button">Connect</button>
     <p id="status"></p>
+    <p>Once connected, select text on any page, right-click, and choose <strong>Ask SmartCursor</strong>, or press the SmartCursor shortcut.</p>
     <script src="options.js"></script>
   </body>
 </html>

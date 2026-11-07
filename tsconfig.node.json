@@ -10,8 +10,7 @@
     "types": ["node"],
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "baseUrl": ".",
-    "paths": { "@shared/*": ["src/shared/*"] },
+    "paths": { "@shared/*": ["./src/shared/*"] },
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true

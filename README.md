@@ -13,13 +13,21 @@ npm run dev
 
 The menu-bar icon opens the assistant. The default shortcut is **⌘⇧Space** on macOS and **Ctrl+Shift+Space** on Windows (`CommandOrControl+Shift+Space`).
 
+The assistant is a small toolbar that opens at the pointer, like a right-click menu. The lead action depends on the app (Explain in editors and browsers, Reply in mail, Polish in documents). Press **Enter** for it, **1–5** for the others, or just start typing to ask a question. On macOS you can also hold **Shift and right-click** (or Shift + two-finger click) anywhere to open it at that spot; that click is not passed to the app underneath. Turn this off in Settings → General. Clicking anywhere else closes it.
+
+**Show me where** (the target button, or press `?`): ask “where do I export as PDF?” and a ghost pointer glides to that control on the screen you are on and circles it. It captures that one display (Screen Recording permission), asks Gemini where the control is, and never clicks for you.
+
+Free-form questions (**Ask**) may use Google Search, so “what's the Man City score?” gets a live answer with source links. Gemini 3 models include 5,000 searches a month free; after that Google bills per search. **⋯** shows the context that will be sent and lets you read the window or screen.
+
+`npm install` downloads the Electron binary and builds the macOS helper. `npm run dev` works even when launched from a VS Code task (it clears `ELECTRON_RUN_AS_NODE`).
+
 Add a Gemini API key in Settings. It is encrypted with the operating system keychain (`safeStorage`) and is not written to SQLite.
 
 ## Permissions on macOS
 
 Selection and paste use `native/macos/SmartCursorBridge`.
 
-1. System Settings → Privacy & Security → Accessibility → enable `SmartCursorBridge`. In development its path is inside this repository at `native/macos/SmartCursorBridge`. Settings shows the exact path.
+1. System Settings → Privacy & Security → Accessibility → enable `SmartCursorBridge`. This also powers Shift + right-click. Rebuilding the helper (`npm install` or `npm run build:native`) changes its signature, so remove it from the list and add it again afterwards. In development its path is inside this repository at `native/macos/SmartCursorBridge`. Settings shows the exact path.
 2. Screen Recording is required only after you click **Capture window** or **Capture screen**. In development, grant it to **Electron**. A packaged app would request it for SmartCursor.
 3. The first time the API key is saved, macOS may ask to use the keychain.
 
@@ -31,8 +39,8 @@ If Accessibility is denied, the assistant still opens. Copy remains available. C
 
 Both extensions talk only to `127.0.0.1` and must present the pairing token.
 
-- Chrome: load `extensions/chrome` as an unpacked extension. Paste the address and token from Settings → Integrations.
-- VS Code: the extension in `extensions/vscode` reads `~/Library/Application Support/SmartCursor/bridge.json`. Copy that folder into your VS Code extensions directory and reload the window. Its status bar says `connected` only after the desktop app answers.
+- Chrome: load `extensions/chrome` as an unpacked extension. In SmartCursor, open Settings → Integrations → **Copy pairing code** and paste it into the extension options. Then right-click a selection and choose **Ask SmartCursor**.
+- VS Code: the extension in `extensions/vscode` reads `~/Library/Application Support/SmartCursor/bridge.json`, so it pairs on its own. Copy that folder into your VS Code extensions directory and reload the window. Right-click in the editor → **Ask SmartCursor**, or click SmartCursor in the status bar. With several VS Code windows open, requests go to the one you used last.
 
 Connection status in Settings is based on real requests. If an extension is not installed, it stays “Not connected.”
 

@@ -3,7 +3,18 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { ClientConnection, IntegrationSnapshot } from '@shared/types'
-import { parseBridgeResult, parseClientId, type BridgeCommand, type BridgeRequest, type BridgeResult, type ClientId } from '@shared/protocol'
+import {
+  parseBridgeContext,
+  parseBridgeResult,
+  parseClientId,
+  parseFocusedAt,
+  parseInstanceId,
+  type BridgeCommand,
+  type BridgeContext,
+  type BridgeRequest,
+  type BridgeResult,
+  type ClientId
+} from '@shared/protocol'
 import { log } from '../logger'
 import type { SettingsManager } from './SettingsManager'
 
@@ -12,15 +23,29 @@ interface Waiter {
   timer: NodeJS.Timeout
 }
 
+interface Instance {
+  focusedAt: number
+  seenAt: number
+}
+
+/** Fired when an extension asks the desktop app to open the popup (for example from a right-click menu). */
+export type OpenListener = (client: ClientId, context: BridgeContext | null) => void
+
+const LIVE_MS = 30_000
+const LONG_POLL_MS = 20_000
+
 export class IntegrationServer {
   private server: Server | null = null
   private token = ''
   port: number | null = null
   private lastSeen = new Map<ClientId, number>()
   private queue = new Map<ClientId, BridgeCommand[]>()
-  private waiters = new Map<ClientId, Waiter>()
+  /** Waiting long-polls, per client, per instance (one per VS Code window). */
+  private waiters = new Map<ClientId, Map<string, Waiter>>()
+  private instances = new Map<ClientId, Map<string, Instance>>()
   private pending = new Map<string, (result: BridgeResult) => void>()
   private listeners = new Set<() => void>()
+  private openListener: OpenListener | null = null
 
   constructor(
     private settings: SettingsManager,
@@ -32,11 +57,15 @@ export class IntegrationServer {
     return () => this.listeners.delete(listener)
   }
 
+  onOpenRequest(listener: OpenListener): void {
+    this.openListener = listener
+  }
+
   async start(): Promise<void> {
     this.token = this.settings.getToken() || randomBytes(24).toString('hex')
     this.settings.setToken(this.token)
     this.server = createServer((request, response) => {
-      void this.handle(request, response)
+      this.handle(request, response).catch(() => this.send(response, 400, { ok: false, error: 'bad-request' }))
     })
     const preferred = 17645
     for (let offset = 0; offset < 15; offset += 1) {
@@ -68,9 +97,11 @@ export class IntegrationServer {
   }
 
   stop(): void {
-    for (const waiter of this.waiters.values()) {
-      clearTimeout(waiter.timer)
-      waiter.response.end(JSON.stringify({ action: null }))
+    for (const byInstance of this.waiters.values()) {
+      for (const waiter of byInstance.values()) {
+        clearTimeout(waiter.timer)
+        this.send(waiter.response, 200, { action: null })
+      }
     }
     this.waiters.clear()
     this.server?.close()
@@ -91,6 +122,7 @@ export class IntegrationServer {
     this.token = randomBytes(24).toString('hex')
     this.settings.setToken(this.token)
     this.lastSeen.clear()
+    this.instances.clear()
     this.writeBridgeFile()
     this.emit()
     return this.snapshot()
@@ -104,6 +136,8 @@ export class IntegrationServer {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pending.delete(action.id)
+        const queued = this.queue.get(client)
+        if (queued) this.queue.set(client, queued.filter((item) => item.id !== action.id))
         resolve(null)
       }, timeoutMs)
       this.pending.set(action.id, (result) => {
@@ -121,7 +155,7 @@ export class IntegrationServer {
     const seen = this.lastSeen.get(client) ?? null
     return {
       enabled,
-      connected: Boolean(enabled && seen && Date.now() - seen < 30_000),
+      connected: Boolean(enabled && seen && Date.now() - seen < LIVE_MS),
       lastSeen: seen
     }
   }
@@ -136,17 +170,26 @@ export class IntegrationServer {
     for (const listener of this.listeners) listener()
   }
 
-  private mark(client: ClientId): void {
+  private mark(client: ClientId, instance: string, focusedAt: number): void {
     const before = this.clientStatus(client, true).connected
-    this.lastSeen.set(client, Date.now())
+    const now = Date.now()
+    this.lastSeen.set(client, now)
+    const known = this.instances.get(client) ?? new Map<string, Instance>()
+    const previous = known.get(instance)
+    known.set(instance, { focusedAt: Math.max(focusedAt, previous?.focusedAt ?? 0), seenAt: now })
+    for (const [id, item] of known) {
+      if (now - item.seenAt > LIVE_MS) known.delete(id)
+    }
+    this.instances.set(client, known)
     const after = this.clientStatus(client, true).connected
     if (before !== after) this.emit()
   }
 
   private async handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    response.setHeader('Access-Control-Allow-Origin', 'null')
+    // Only the Chrome extension (an extension origin) and VS Code (no origin) call this server,
+    // and every request must carry the bearer token, so a wildcard origin exposes nothing.
     response.setHeader('Access-Control-Allow-Origin', '*')
-    response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-SmartCursor-Client')
+    response.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-SmartCursor-Client, X-SmartCursor-Instance, X-SmartCursor-Focused-At')
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
     response.setHeader('Access-Control-Allow-Private-Network', 'true')
     if (request.method === 'OPTIONS') {
@@ -163,8 +206,7 @@ export class IntegrationServer {
     const header = request.headers.authorization ?? ''
     const presented = header.startsWith('Bearer ') ? header.slice(7) : ''
     if (!tokensEqual(presented, this.token)) {
-      response.writeHead(401, { 'Content-Type': 'application/json' })
-      response.end(JSON.stringify({ ok: false, error: 'unauthorized' }))
+      this.send(response, 401, { ok: false, error: 'unauthorized' })
       return
     }
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
@@ -178,17 +220,20 @@ export class IntegrationServer {
       this.send(response, 403, { ok: false, error: 'integration-disabled' })
       return
     }
-    this.mark(client)
+    const instance = parseInstanceId(request.headers['x-smartcursor-instance'])
+    const focusedAt = parseFocusedAt(request.headers['x-smartcursor-focused-at'])
+    this.mark(client, instance, focusedAt)
     if (request.method === 'GET' && url.pathname === '/v1/health') {
       this.send(response, 200, { ok: true, client })
       return
     }
     if (request.method === 'POST' && url.pathname === '/v1/heartbeat') {
       this.send(response, 200, { ok: true })
+      this.flush(client)
       return
     }
     if (request.method === 'GET' && url.pathname === '/v1/actions') {
-      this.poll(client, response)
+      this.poll(client, instance, response)
       return
     }
     if (request.method === 'POST' && url.pathname === '/v1/result') {
@@ -203,40 +248,68 @@ export class IntegrationServer {
       this.send(response, 200, { ok: true })
       return
     }
+    if (request.method === 'POST' && url.pathname === '/v1/open') {
+      const body = await readJson(request)
+      const context = body && typeof body === 'object' && 'context' in body ? parseBridgeContext((body as { context: unknown }).context) : null
+      this.send(response, 200, { ok: true })
+      this.openListener?.(client, context)
+      return
+    }
     this.send(response, 404, { ok: false, error: 'not-found' })
   }
 
-  private poll(client: ClientId, response: ServerResponse): void {
-    const queued = this.queue.get(client) ?? []
-    if (queued.length > 0) {
-      const action = queued.shift()
-      this.send(response, 200, { action })
-      return
-    }
-    const existing = this.waiters.get(client)
+  private poll(client: ClientId, instance: string, response: ServerResponse): void {
+    const byInstance = this.waiters.get(client) ?? new Map<string, Waiter>()
+    this.waiters.set(client, byInstance)
+    const existing = byInstance.get(instance)
     if (existing) {
+      // The same window re-polled (for example after regaining focus); release its old request.
       clearTimeout(existing.timer)
       this.send(existing.response, 200, { action: null })
     }
     const timer = setTimeout(() => {
-      if (this.waiters.get(client)?.response === response) this.waiters.delete(client)
-      if (!response.writableEnded) this.send(response, 200, { action: null })
-    }, 20_000)
-    response.on('close', () => clearTimeout(timer))
-    this.waiters.set(client, { response, timer })
+      if (byInstance.get(instance)?.response === response) byInstance.delete(instance)
+      this.send(response, 200, { action: null })
+    }, LONG_POLL_MS)
+    response.on('close', () => {
+      clearTimeout(timer)
+      if (byInstance.get(instance)?.response === response) byInstance.delete(instance)
+    })
+    byInstance.set(instance, { response, timer })
+    this.flush(client)
   }
 
+  /** Deliver queued commands to the most recently focused live instance, once it is waiting. */
   private flush(client: ClientId): void {
-    const waiter = this.waiters.get(client)
     const queued = this.queue.get(client) ?? []
-    if (!waiter || queued.length === 0 || waiter.response.writableEnded) return
+    const byInstance = this.waiters.get(client)
+    if (queued.length === 0 || !byInstance || byInstance.size === 0) return
+    const target = this.preferredInstance(client)
+    const waiter = target ? byInstance.get(target) : undefined
+    if (!target || !waiter || waiter.response.writableEnded) return
     clearTimeout(waiter.timer)
-    this.waiters.delete(client)
+    byInstance.delete(target)
     this.send(waiter.response, 200, { action: queued.shift() })
   }
 
+  private preferredInstance(client: ClientId): string | null {
+    const known = this.instances.get(client)
+    if (!known) return null
+    const now = Date.now()
+    let best: string | null = null
+    let bestInstance: Instance | null = null
+    for (const [id, item] of known) {
+      if (now - item.seenAt > LIVE_MS) continue
+      if (!bestInstance || item.focusedAt > bestInstance.focusedAt || (item.focusedAt === bestInstance.focusedAt && item.seenAt > bestInstance.seenAt)) {
+        best = id
+        bestInstance = item
+      }
+    }
+    return best
+  }
+
   private send(response: ServerResponse, status: number, body: unknown): void {
-    if (response.writableEnded) return
+    if (response.writableEnded || response.headersSent) return
     response.writeHead(status, { 'Content-Type': 'application/json' })
     response.end(JSON.stringify(body))
   }

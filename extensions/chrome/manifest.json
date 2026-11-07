@@ -1,17 +1,36 @@
 {
   "manifest_version": 3,
   "name": "SmartCursor",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shares the current page selection with the SmartCursor desktop app and inserts approved text.",
-  "permissions": ["storage", "tabs", "scripting", "alarms"],
-  "host_permissions": ["http://127.0.0.1/*", "<all_urls>"],
-  "background": { "service_worker": "background.js" },
-  "action": { "default_popup": "popup.html", "default_title": "SmartCursor" },
+  "permissions": [
+    "storage",
+    "tabs",
+    "scripting",
+    "alarms",
+    "contextMenus"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*",
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SmartCursor"
+  },
   "options_page": "options.html",
   "content_scripts": [
     {
-      "matches": ["http://*/*", "https://*/*"],
-      "js": ["content.js"],
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
       "run_at": "document_idle"
     }
   ]

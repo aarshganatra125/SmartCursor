@@ -6,6 +6,7 @@ export const DEFAULT_SETTINGS: SettingsData = {
   theme: 'system',
   model: 'gemini-3.5-flash-lite',
   shortcut: 'CommandOrControl+Shift+Space',
+  mouseTrigger: true,
   baseUrl: '',
   integrations: { chrome: true, vscode: true },
   privacy: {
@@ -29,7 +30,8 @@ export class SettingsManager {
         integrations: { ...DEFAULT_SETTINGS.integrations, ...parsed.integrations },
         privacy: { ...DEFAULT_SETTINGS.privacy, ...parsed.privacy }
       }
-      if (!settings.model || settings.model.startsWith('gpt-') || settings.model.startsWith('gemini-2.') || settings.model === 'gemini-3.5-flash') {
+      // Migrate ids from older builds. Ids listed in MODEL_PRESETS must never be rewritten here.
+      if (!settings.model || settings.model.startsWith('gpt-') || settings.model.startsWith('gemini-2.')) {
         settings.model = DEFAULT_SETTINGS.model
         this.db.setSetting('settings', JSON.stringify(settings))
       }
@@ -40,11 +42,12 @@ export class SettingsManager {
   }
 
   update(patch: Partial<SettingsData>): SettingsData {
+    const current = this.get()
     const next = {
-      ...this.get(),
+      ...current,
       ...patch,
-      integrations: { ...this.get().integrations, ...patch.integrations },
-      privacy: { ...this.get().privacy, ...patch.privacy }
+      integrations: { ...current.integrations, ...patch.integrations },
+      privacy: { ...current.privacy, ...patch.privacy }
     }
     this.assertValid(next)
     this.db.setSetting('settings', JSON.stringify(next))

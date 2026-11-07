@@ -21,7 +21,8 @@ export default defineConfig({
       rollupOptions: {
         input: {
           floating: resolve('src/renderer/floating.html'),
-          settings: resolve('src/renderer/settings.html')
+          settings: resolve('src/renderer/settings.html'),
+          ghost: resolve('src/renderer/ghost.html')
         }
       }
     }

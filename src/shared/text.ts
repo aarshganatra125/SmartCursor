@@ -35,3 +35,36 @@ export function isAccelerator(value: string): boolean {
   }
   return parts.slice(0, -1).every((part) => modifiers.has(part))
 }
+
+export interface LocateResult {
+  found: boolean
+  /** Using this control completes the goal. */
+  final: boolean
+  /** The goal is already complete; nothing more to point at. */
+  done: boolean
+  label: string
+  hint: string
+  box: [number, number, number, number] | null
+}
+
+/** Parse the model's JSON answer to "where is X on this screenshot". Tolerates code fences and stray text. */
+export function parseLocateResult(raw: string): LocateResult | null {
+  const start = raw.indexOf('{')
+  const end = raw.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw.slice(start, end + 1))
+  } catch {
+    return null
+  }
+  if (!parsed || typeof parsed !== 'object') return null
+  const value = parsed as Record<string, unknown>
+  const label = typeof value.label === 'string' ? value.label.slice(0, 80) : ''
+  const hint = typeof value.hint === 'string' ? value.hint.slice(0, 240) : ''
+  const box = Array.isArray(value.box_2d) && value.box_2d.length === 4 && value.box_2d.every((n) => typeof n === 'number' && Number.isFinite(n))
+    ? value.box_2d as [number, number, number, number]
+    : null
+  const found = value.found === true && box !== null
+  return { found, final: found && value.final === true, done: !found && value.done === true, label, hint, box: found ? box : null }
+}

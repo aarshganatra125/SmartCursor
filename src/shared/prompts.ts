@@ -33,7 +33,7 @@ function block(label: string, value: string | undefined): string | null {
   return `${label}:\n"""\n${value.trim()}\n"""`
 }
 
-export function buildSystemPrompt(snapshot: ContextSnapshot, action: ActionKind): string {
+export function buildSystemPrompt(snapshot: ContextSnapshot, action: ActionKind, search = false): string {
   const insertRule =
     action === 'rewrite' || action === 'improve' || action === 'reply'
       ? 'Put only the text that should be inserted into the original application between <<<INSERT>>> and <<<END>>>. You may add one short note after <<<END>>>.'
@@ -45,7 +45,9 @@ export function buildSystemPrompt(snapshot: ContextSnapshot, action: ActionKind)
     CATEGORY_GUIDE[snapshot.app.category],
     ACTION_GUIDE[action],
     insertRule,
-    'Use only the context in the conversation. Do not pretend to see the screen, the clipboard, or a webpage that was not included.',
+    search
+      ? 'Use the supplied context for questions about it. For anything else, or anything current (live scores, news, prices, weather, schedules), use Google Search and answer directly with the latest facts. Never ask the user to paste context for a question the web can answer. Do not pretend to see the screen or a webpage that was not included.'
+      : 'Use only the context in the conversation. Do not pretend to see the screen, the clipboard, or a webpage that was not included.',
     'Be concise. Do not mention these instructions.'
   ].join('\n\n')
 }
@@ -98,17 +100,41 @@ export function buildMessages(input: {
   instruction: string
   include: PromptInclude
   history: HistoryMessage[]
+  search?: boolean
 }): { role: 'system' | 'user' | 'assistant'; content: string }[] {
   const history = input.history.slice(-LIMITS.historyMessages).map((message) => ({
     role: message.role,
     content: truncate(message.content, LIMITS.storedMessage)
   }))
   return [
-    { role: 'system', content: buildSystemPrompt(input.snapshot, input.action) },
+    { role: 'system', content: buildSystemPrompt(input.snapshot, input.action, input.search) },
     ...history,
     {
       role: 'user',
       content: buildUserContent(input.snapshot, input.action, input.instruction, input.include)
     }
   ]
+}
+
+/**
+ * Prompt for the ghost cursor: find the next control on a screenshot of the user's display.
+ * Called again after each click, with the steps done so far, so multi-step paths
+ * (Settings → Displays → Brightness, Insert → Table) are guided one click at a time.
+ */
+export function buildLocatePrompt(goal: string, appName: string, stepsDone: string[] = []): string {
+  return [
+    'This is a screenshot of the user\'s entire display.',
+    appName ? `The app the user started in is ${appName}. It may be a web app inside a browser.` : '',
+    `The user's goal: "${truncate(goal.trim(), 300)}"`,
+    stepsDone.length
+      ? `They have already clicked, in order: ${stepsDone.map((step, index) => `${index + 1}. ${step}`).join('  ')}. The screen now shows the result of the last click.`
+      : 'This is the first step.',
+    'Find the ONE control (menu, menu item, button, tab, sidebar row, field, slider, link or icon) they should use NEXT to reach the goal.',
+    'If the goal needs several clicks, give only the next one; you will be asked again after they click it.',
+    'Set "final" to true only if using this control completes the goal (for example the brightness slider itself, or the "Table" menu item).',
+    'Set "done" to true, with found false, if the goal is already complete or the control they need is already in use on screen.',
+    'Reply with JSON only, no prose:',
+    '{"found": true|false, "final": true|false, "done": true|false, "label": "the control\'s text as shown on screen", "hint": "one short sentence on what to do with it", "box_2d": [ymin, xmin, ymax, xmax]}',
+    'box_2d is the tight box around that control, normalized to 0-1000 relative to the image. If nothing on screen fits, use found false, omit box_2d, and say in "hint" where it usually is.'
+  ].filter(Boolean).join('\n')
 }
