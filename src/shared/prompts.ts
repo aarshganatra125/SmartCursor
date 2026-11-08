@@ -145,6 +145,8 @@ export function buildAgentPrompt(goal: string, appName: string, history: string[
     'You operate the user\'s Mac one step at a time to complete their goal. This is a screenshot of their entire display.',
     appName ? `The app in front is ${appName} (it may be a web app inside a browser).` : '',
     `Goal: "${truncate(goal.trim(), 300)}"`,
+    /\bjira\b/i.test(goal) ? 'For Jira, use open_url with exactly https://smartcursor.atlassian.net/jira/software/projects/SCRUM/boards/1/backlog. Do not open jira.com or a generic Atlassian page.' : '',
+    /\b(?:assigned\s+to\s+me|my\s+(?:jira\s+)?tasks?)\b/i.test(goal) ? 'This task is restricted to items assigned to the current user. Before changing any task status, visibly verify the issue assignee is the current user (for example “You” or their signed-in account). Never infer ownership from the project, board, title, or a filter. If the assignee is not visible or is someone else, skip it; if none can be verified, reply with fail.' : '',
     history.length ? `Actions already taken, in order: ${history.map((item, index) => `${index + 1}. ${item}`).join('  ')}` : 'No actions taken yet.',
     notes.length ? `Results from earlier tools:\n${notes.map((note) => truncate(note, 1200)).join('\n')}` : '',
     'Choose exactly ONE next action. Prefer the direct tools over clicking through menus:',
@@ -155,6 +157,7 @@ export function buildAgentPrompt(goal: string, appName: string, history: string[
     '- {"action":"type","text":"…","submit":false} types into the focused field (click the field first). submit true presses Return after.',
     '- {"action":"key","keys":"cmd+t"} presses a shortcut. {"action":"scroll","direction":"down"|"up"} scrolls under the pointer.',
     '- {"action":"done","summary":"what was achieved"} when the goal is visibly complete. {"action":"fail","summary":"why"} if it cannot be done safely.',
+    'Every entry in “Actions already taken” has already succeeded and the screenshot was captured after it. Never repeat an earlier action or click the same named app, sidebar item, button, or tab again just because it remains visible. Do not double-click unless one click is known to be insufficient. After open_app, move on to the next task inside that app.',
     'Rules: never delete, move, rename or overwrite files; never send, submit, buy or pay unless the goal says so; never type passwords or payment details; never use terminals or run commands.',
     'Add "risky": true to any action that sends, deletes, buys, installs or changes settings. Add a short "reason". Reply with JSON only.'
   ].filter(Boolean).join('\n')

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { checkAction, normalizeKeys, parseAgentAction, resolveHomePath, type AgentAction, type GuardContext } from '../src/shared/agent'
+import { actionTarget, applyWorkspaceDestination, checkAction, completedGoalSummary, normalizeKeys, parseAgentAction, resolveHomePath, SMARTCURSOR_JIRA_BACKLOG_URL, type AgentAction, type GuardContext } from '../src/shared/agent'
 
 const ctx: GuardContext = { frontBundleId: 'com.google.Chrome', frontAppName: 'Google Chrome', homeDir: '/Users/dev', history: [] }
 const click = (label: string, risky = false): AgentAction => ({ kind: 'click', label, box: [1, 1, 2, 2], double: false, risky, reason: '' })
@@ -27,6 +27,8 @@ describe('guardrails', () => {
       expect(checkAction(click(label), ctx).decision).toBe('confirm')
     }
     expect(checkAction(click('Next', true), ctx).decision).toBe('confirm')
+    expect(checkAction(click('Done'), ctx).decision).toBe('confirm')
+    expect(checkAction(click('Mark as complete'), ctx).decision).toBe('confirm')
     expect(checkAction({ kind: 'key', keys: 'return', risky: false, reason: '' }, ctx).decision).toBe('confirm')
   })
 
@@ -59,5 +61,30 @@ describe('guardrails', () => {
     expect(checkAction({ kind: 'open_url', url: 'file:///etc/hosts', risky: false, reason: '' }, ctx).decision).toBe('block')
     const stuck = { ...ctx, history: ['click “Insert”', 'click “Insert”'] }
     expect(checkAction(click('Insert'), stuck).decision).toBe('block')
+  })
+})
+
+describe('workflow progression', () => {
+  it('gives an app launch and a same-named click one shared target identity', () => {
+    expect(actionTarget({ kind: 'open_app', name: 'Apple Music', risky: false, reason: '' })).toBe('apple music')
+    expect(actionTarget(click('Apple Music'))).toBe('apple music')
+  })
+
+  it('does not treat repeatable navigation and playback controls as a completed target', () => {
+    expect(actionTarget(click('Next'))).toBeNull()
+    expect(actionTarget(click('Play'))).toBeNull()
+  })
+
+  it('recognizes unambiguous final workflow controls without another model pass', () => {
+    expect(completedGoalSummary('Open Apple Music and play Favourite Songs', click('Play'))).toBe('Playback started.')
+    expect(completedGoalSummary('Open Apple Music', { kind: 'open_app', name: 'Apple Music', risky: false, reason: '' })).toBe('Opened Apple Music.')
+    expect(completedGoalSummary('Open Apple Music and play Favourite Songs', { kind: 'open_app', name: 'Apple Music', risky: false, reason: '' })).toBeNull()
+  })
+
+  it('always resolves a Jira workflow to the configured SmartCursor backlog', () => {
+    const action = applyWorkspaceDestination('Open Jira', { kind: 'open_url', url: 'https://jira.com', risky: false, reason: '' })
+    expect(action).toMatchObject({ kind: 'open_url', url: SMARTCURSOR_JIRA_BACKLOG_URL })
+    const app = applyWorkspaceDestination('Open Jira', { kind: 'open_app', name: 'Jira', risky: false, reason: '' })
+    expect(app).toMatchObject({ kind: 'open_url', url: SMARTCURSOR_JIRA_BACKLOG_URL })
   })
 })

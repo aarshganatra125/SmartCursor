@@ -47,8 +47,9 @@ export class AIService {
       return { ok: false, requestId, text: '', insertText: '', error: 'Add a Gemini API key in Settings before running an action.' }
     }
     const settings = this.settings.get()
-    // Free-form questions may be about the world ("what's the score?"), so let Gemini search.
-    const search = request.action === 'ask'
+    // Search grounding has its own quota. Use it only when the wording clearly needs fresh web
+    // information; ordinary questions should keep working when that quota is exhausted.
+    const search = request.action === 'ask' && needsGoogleSearch(request.instruction)
     const messages = buildMessages({
       snapshot: session.snapshot,
       action: request.action,
@@ -302,6 +303,11 @@ export class GeminiError extends Error {
   }
 }
 
+/** Whether a free-form question is likely to need information newer than the model's knowledge. */
+export function needsGoogleSearch(instruction: string): boolean {
+  return /\b(latest|current|today|tomorrow|yesterday|live|news|headlines?|weather|forecast|stock|share\s+price|exchange\s+rate|currency|schedule|standings?|rankings?|who\s+won|time\s+in)\b/i.test(instruction)
+}
+
 async function geminiErrorMessage(response: Response): Promise<string> {
   try {
     const body = await response.json() as { error?: { message?: string } }
@@ -324,7 +330,7 @@ export function explainAiError(error: unknown, options: { usesGoogleSearch?: boo
     if (error.status === 404) return 'That Gemini model was not found. Choose another model in Settings.'
     if (error.status === 429) {
       return options.usesGoogleSearch
-        ? 'Google Search grounding reached its Gemini rate limit or quota. Live scores need search; check usage and billing in Google AI Studio, then retry after the limit resets.'
+        ? 'Google Search grounding reached its Gemini rate limit or quota. Retry after the limit resets, or ask a question that does not need current web information.'
         : 'Gemini reached a rate limit or quota. Check usage and billing in Google AI Studio, then retry after the limit resets.'
     }
     if (error.status === 503) return 'Gemini is temporarily unavailable. Wait a moment and retry.'

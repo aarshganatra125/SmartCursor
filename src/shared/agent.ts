@@ -22,6 +22,7 @@ export type AgentAction =
 export type Verdict = { decision: 'allow' } | { decision: 'confirm'; why: string } | { decision: 'block'; why: string }
 
 export const AGENT_LIMITS = { steps: 12, ms: 120_000, typeChars: 500 }
+export const SMARTCURSOR_JIRA_BACKLOG_URL = 'https://smartcursor.atlassian.net/jira/software/projects/SCRUM/boards/1/backlog'
 
 const str = (value: unknown, max: number) => (typeof value === 'string' ? value.trim().slice(0, max) : '')
 
@@ -82,6 +83,21 @@ export function parseAgentAction(raw: string): AgentAction | null {
   }
 }
 
+/** Keep named workspace destinations deterministic instead of letting the model guess a public URL. */
+export function applyWorkspaceDestination(goal: string, action: AgentAction): AgentAction {
+  const mentionsJira = /\bjira\b/i.test(goal)
+  const opensJira = action.kind === 'open_url' || (action.kind === 'open_app' && /\bjira\b/i.test(action.name))
+  if (mentionsJira && opensJira) {
+    return {
+      kind: 'open_url',
+      url: SMARTCURSOR_JIRA_BACKLOG_URL,
+      risky: false,
+      reason: 'Open the SmartCursor Jira backlog.'
+    }
+  }
+  return action
+}
+
 /** Apps SmartCursor never operates: shells, disk and password tools, and SmartCursor itself. */
 const BLOCKED_APPS = [
   'com.apple.terminal', 'com.googlecode.iterm2', 'dev.warp.warp', 'net.kovidgoyal.kitty', 'org.alacritty', 'com.github.wez.wezterm', 'co.zeit.hyper',
@@ -98,6 +114,7 @@ const BLOCKED_KEY_LIST = [
 
 /** Words that mean "this changes or sends something for real". Always asks, even in allow-all mode. */
 const RISKY_WORDS = /\b(delete|remove|erase|trash|bin|uninstall|format|wipe|reset|restore|shut\s*down|restart|reboot|log\s*out|sign\s*out|send|submit|post|publish|share|pay|payment|buy|purchase|checkout|order|transfer|withdraw|subscribe|install|allow|permission|grant|password|overwrite|replace|discard|don.?t save|empty|unsubscribe|merge|deploy|accept|agree)\b/i
+const TASK_STATUS_WORDS = /\b(done|complete(?:d)?|resolve(?:d)?|close(?:d)?|reopen(?:ed)?|in progress|to do)\b/i
 
 /** Files that run code when opened; SmartCursor only opens documents and folders. */
 const EXECUTABLE = /\.(app|command|sh|bash|zsh|tool|pkg|mpkg|dmg|scpt|scptd|applescript|workflow|terminal|jar|py|rb|pl|js|mjs|exe|bin|run|plugin|kext|prefpane|webloc|inetloc|fileloc)$/i
@@ -146,6 +163,9 @@ export function checkAction(action: AgentAction, ctx: GuardContext): Verdict {
 
   switch (action.kind) {
     case 'click':
+      if (TASK_STATUS_WORDS.test(action.label)) {
+        return { decision: 'confirm', why: `This changes a task's status. Confirm that this exact task is assigned to you before clicking “${action.label}”.` }
+      }
       if (RISKY_WORDS.test(action.label)) return { decision: 'confirm', why: `Click “${action.label}”?` }
       break
     case 'type': {
@@ -206,6 +226,34 @@ export function describeAction(action: AgentAction): string {
     case 'done': return 'done'
     case 'fail': return 'give up'
   }
+}
+
+/**
+ * A stable identity for a target that has already been operated. It intentionally combines
+ * open_app and click: after opening an app, clicking the same app icon again is redundant.
+ * Generic navigation controls are excluded because they can legitimately be used repeatedly.
+ */
+export function actionTarget(action: AgentAction): string | null {
+  const raw = action.kind === 'click' ? action.label : action.kind === 'open_app' ? action.name : ''
+  const target = raw.toLowerCase().replace(/\s+/g, ' ').trim()
+  if (!target || /^(next|back|previous|continue|more|load more|play|pause)$/i.test(target)) return null
+  return target
+}
+
+/**
+ * Some user goals have an unambiguous final control. Ending immediately after that control avoids
+ * an unnecessary screenshot/model round-trip simply to ask whether playback, pause, or opening a
+ * one-step app completed successfully.
+ */
+export function completedGoalSummary(goal: string, action: AgentAction): string | null {
+  const requested = goal.toLowerCase()
+  const label = action.kind === 'click' ? action.label.trim().toLowerCase() : ''
+  if (/\bplay\b/.test(requested) && /^play(?:\s+(?:song|album|playlist))?$/.test(label)) return 'Playback started.'
+  if (/\bpause\b/.test(requested) && /^pause(?:\s+(?:song|album|playlist))?$/.test(label)) return 'Playback paused.'
+  const oneStepOpen = /^\s*(?:open|launch|start)\s+.+?\s*[.!?]?\s*$/i.test(goal) && !/\b(?:and|then)\b/i.test(goal)
+  if (oneStepOpen && action.kind === 'open_app') return `Opened ${action.name}.`
+  if (oneStepOpen && action.kind === 'open_url') return 'Opened the requested web page.'
+  return null
 }
 
 function preview(text: string): string {

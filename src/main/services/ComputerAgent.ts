@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process'
 import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dialog, globalShortcut, screen, shell, type Display } from 'electron'
-import { AGENT_LIMITS, checkAction, describeAction, normalizeKeys, resolveHomePath, type AgentAction } from '@shared/agent'
+import { AGENT_LIMITS, actionTarget, applyWorkspaceDestination, checkAction, completedGoalSummary, describeAction, normalizeKeys, resolveHomePath, type AgentAction } from '@shared/agent'
 import { isOwnApplication } from '@shared/categorize'
 import { boxToScreen } from '@shared/geometry'
 import { errorMessage } from '../errors'
@@ -56,6 +56,9 @@ export class ComputerAgent {
     const deadline = Date.now() + AGENT_LIMITS.ms
     const history: string[] = []
     const notes: string[] = []
+    const operatedTargets = new Set<string>()
+    const preventedDuplicates = new Map<string, number>()
+    let previousAction: AgentAction | null = null
     let front = { bundleId: input.bundleId, name: input.appName }
     let finished = false
     log.info('Agent started', { mode: input.mode })
@@ -69,7 +72,10 @@ export class ComputerAgent {
           break
         }
         this.windows.hideGhost()
-        await sleep(step === 1 ? 180 : 750)
+        // Normal clicks and sidebar transitions should feel immediate. Launching an app or URL
+        // gets a little longer so the next screenshot reflects the newly opened interface.
+        const settledAfterLaunch = previousAction?.kind === 'open_app' || previousAction?.kind === 'open_url'
+        await sleep(step === 1 ? 120 : settledAfterLaunch ? 900 : 350)
         front = await this.frontmost(front)
 
         let image: string
@@ -86,11 +92,15 @@ export class ComputerAgent {
         const decision = await this.ai.decide({ goal: input.goal, appName: front.name, history, notes, jpegBase64: image })
         if (run.stopped) break
         if (!decision.ok) {
-          this.message(run.display, decision.error, 6000)
+          // A request can succeed on screen and then hit a transient model error on the otherwise
+          // unnecessary next planning pass. Preserve the completed work instead of presenting it
+          // as though the workflow itself failed.
+          const last = history.filter((item) => !item.startsWith('(prevented duplicate)')).at(-1)
+          this.message(run.display, last ? `Completed the last visible step ✓ ${last}` : decision.error, 6000)
           finished = true
           break
         }
-        const action = decision.action
+        const action = applyWorkspaceDestination(input.goal, decision.action)
         if (action.kind === 'done') {
           this.message(run.display, `Done ✓ ${action.summary}`.trim(), 6000)
           finished = true
@@ -100,6 +110,22 @@ export class ComputerAgent {
           this.message(run.display, `Could not finish: ${action.summary || 'no safe way to do that.'}`, 7000)
           finished = true
           break
+        }
+
+        const target = actionTarget(action)
+        if (target && operatedTargets.has(target)) {
+          const attempts = (preventedDuplicates.get(target) ?? 0) + 1
+          preventedDuplicates.set(target, attempts)
+          const note = `“${target}” was already operated. Do not repeat it; choose the next distinct action.`
+          history.push(`(prevented duplicate) ${describeAction(action)}`)
+          notes.push(note)
+          if (attempts >= 2) {
+            this.message(run.display, `Stopped: it kept trying “${target}” after that step was already complete.`, 7000)
+            finished = true
+            break
+          }
+          // Take a fresh screenshot and re-plan instead of turning a repeated suggestion into a click.
+          continue
         }
 
         const verdict = checkAction(action, { frontBundleId: front.bundleId, frontAppName: front.name, homeDir: homedir(), history })
@@ -121,15 +147,23 @@ export class ComputerAgent {
           }
         } else {
           // A beat to see what is about to happen, and to press Esc.
-          await sleep(650)
+          await sleep(250)
           if (run.stopped) break
         }
 
         const result = await this.execute(action, front, run.display)
         history.push(description)
+        if (target) operatedTargets.add(target)
+        previousAction = action
         if (result.note) notes.push(result.note)
         if (!result.ok) {
           this.message(run.display, result.error ?? 'That step did not work.', 7000)
+          finished = true
+          break
+        }
+        const completion = completedGoalSummary(input.goal, action)
+        if (completion) {
+          this.message(run.display, `Done ✓ ${completion}`, 6000)
           finished = true
           break
         }
@@ -221,7 +255,7 @@ export class ComputerAgent {
   private async activate(bundleId: string): Promise<void> {
     if (!bundleId) return
     await this.bridge.call(['activate', bundleId], 2000).catch(() => undefined)
-    await sleep(220)
+    await sleep(100)
   }
 
   private async frontmost(previous: { bundleId: string; name: string }): Promise<{ bundleId: string; name: string }> {
