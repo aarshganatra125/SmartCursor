@@ -1,1 +1,2 @@
 SmartCursor workflow test file.
+hello
