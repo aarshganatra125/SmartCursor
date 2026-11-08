@@ -22,6 +22,14 @@ describe('sports score routing', () => {
     expect(filterEvents(events, 'Bulls vs Knicks')).toEqual([events[1]])
   })
 
+  it('matches singular and plural team-name variants in a requested matchup', () => {
+    const events = [
+      { home_team: 'Oklahoma City Thunder', away_team: 'Washington Wizards', completed: false }
+    ]
+    expect(filterEvents(events, 'Wizards vs Thunders')).toEqual(events)
+    expect(inferSport('Wizards vs Thunders')?.key).toBe('basketball_nba')
+  })
+
   it('routes a soccer team to its supported competition', () => {
     expect(inferSport('Is Arsenal playing live?')?.key).toBe('soccer_epl')
   })

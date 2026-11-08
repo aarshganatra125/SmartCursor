@@ -151,8 +151,9 @@ describe('protocol', () => {
   })
 
   it('parses context sent with a right-click open request and multi-window headers', () => {
-    const context = parseBridgeContext({ selection: 'x'.repeat(20_000), fileName: 'a.ts', diagnostics: [{ message: 'bad', line: 3 }, 'junk'] })
+    const context = parseBridgeContext({ selection: 'x'.repeat(20_000), fileName: 'a.ts', workspaceFolder: '/Users/dev/project', diagnostics: [{ message: 'bad', line: 3 }, 'junk'] })
     expect(context?.selection.length).toBe(12_000)
+    expect(context?.workspaceFolder).toBe('/Users/dev/project')
     expect(context?.diagnostics).toEqual([{ message: 'bad', severity: 'info', line: 3 }])
     expect(parseBridgeContext({ url: 'https://example.com' })).toBeNull()
     expect(parseInstanceId('win-1a2B')).toBe('win-1a2B')

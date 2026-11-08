@@ -10,7 +10,7 @@ interface Sport {
 }
 
 const SPORTS: Sport[] = [
-  { key: 'basketball_nba', title: 'NBA', terms: ['nba', 'basketball', 'lakers', 'celtics', 'warriors', 'knicks', 'bulls', 'heat', 'mavericks', 'spurs', 'nuggets', 'suns', 'bucks', 'sixers', '76ers', 'thunder', 'timberwolves', 'clippers', 'cavaliers', 'raptors'] },
+  { key: 'basketball_nba', title: 'NBA', terms: ['nba', 'basketball', 'lakers', 'celtics', 'warriors', 'knicks', 'bulls', 'heat', 'mavericks', 'spurs', 'nuggets', 'suns', 'bucks', 'sixers', '76ers', 'thunder', 'thunders', 'wizards', 'timberwolves', 'clippers', 'cavaliers', 'raptors'] },
   { key: 'americanfootball_nfl', title: 'NFL', terms: ['nfl', 'football', 'chiefs', 'eagles', 'cowboys', '49ers', 'niners', 'packers', 'bills', 'ravens', 'lions', 'bengals', 'dolphins', 'steelers', 'patriots', 'seahawks', 'vikings'] },
   { key: 'baseball_mlb', title: 'MLB', terms: ['mlb', 'baseball', 'yankees', 'mets', 'dodgers', 'red sox', 'cubs', 'braves', 'astros', 'padres', 'giants', 'phillies', 'blue jays'] },
   { key: 'icehockey_nhl', title: 'NHL', terms: ['nhl', 'hockey', 'maple leafs', 'bruins', 'rangers', 'oilers', 'canucks', 'avalanche', 'golden knights', 'penguins', 'blackhawks', 'red wings'] },
@@ -118,15 +118,17 @@ function parseMatchup(question: string): { left: string; right: string } | null 
 
 /** A user normally asks for “Bulls vs Knicks”, not the full franchise names returned by the API. */
 function questionNamesTeam(question: string, team: string): boolean {
-  return team
+  const requestedWords = teamWords(question)
+  return teamWords(team).some((teamWord) => requestedWords.some((requestedWord) => requestedWord === teamWord))
+}
+
+/** Treat natural variants such as “Thunders” and “Thunder” as the same team name. */
+function teamWords(value: string): string[] {
+  return value
     .toLowerCase()
     .split(/[^a-z0-9]+/)
     .filter((word) => word.length >= 3)
-    .some((word) => new RegExp(`\\b${escapeRegExp(word)}\\b`, 'i').test(question))
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .map((word) => word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word)
 }
 
 function formatEvent(event: OddsEvent): string {

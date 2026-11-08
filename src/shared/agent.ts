@@ -113,8 +113,9 @@ const BLOCKED_KEY_LIST = [
 ]
 
 /** Words that mean "this changes or sends something for real". Always asks, even in allow-all mode. */
-const RISKY_WORDS = /\b(delete|remove|erase|trash|bin|uninstall|format|wipe|reset|restore|shut\s*down|restart|reboot|log\s*out|sign\s*out|send|submit|post|publish|share|pay|payment|buy|purchase|checkout|order|transfer|withdraw|subscribe|install|allow|permission|grant|password|overwrite|replace|discard|don.?t save|empty|unsubscribe|merge|deploy|accept|agree)\b/i
+const RISKY_WORDS = /\b(delete|remove|erase|trash|bin|uninstall|format|wipe|reset|restore|shut\s*down|restart|reboot|log\s*out|sign\s*out|send|submit|post|publish|commit|push|share|pay|payment|buy|purchase|checkout|order|transfer|withdraw|subscribe|install|allow|permission|grant|password|overwrite|replace|discard|don.?t save|empty|unsubscribe|merge|deploy|accept|agree)\b/i
 const TASK_STATUS_WORDS = /\b(done|complete(?:d)?|resolve(?:d)?|close(?:d)?|reopen(?:ed)?|in progress|to do)\b/i
+const GIT_STAGING_WORDS = /\b(stage|unstage|add all|stage all)\b/i
 
 /** Files that run code when opened; SmartCursor only opens documents and folders. */
 const EXECUTABLE = /\.(app|command|sh|bash|zsh|tool|pkg|mpkg|dmg|scpt|scptd|applescript|workflow|terminal|jar|py|rb|pl|js|mjs|exe|bin|run|plugin|kext|prefpane|webloc|inetloc|fileloc)$/i
@@ -123,6 +124,10 @@ export interface GuardContext {
   frontBundleId: string
   frontAppName: string
   homeDir: string
+  /** The user-approved workflow goal, used only for narrow identity checks. */
+  goal?: string
+  /** In Allow all mode, only concrete protected actions—not a model's generic risk flag—need confirmation. */
+  allowAll?: boolean
   /** The model's own previous actions this run, for loop detection. */
   history: string[]
 }
@@ -163,10 +168,14 @@ export function checkAction(action: AgentAction, ctx: GuardContext): Verdict {
 
   switch (action.kind) {
     case 'click':
+      if (front.includes('com.microsoft.vscode') && GIT_STAGING_WORDS.test(action.label)) {
+        return { decision: 'block', why: 'SmartCursor does not stage or unstage files. It can only commit files that are already staged by you.' }
+      }
       if (TASK_STATUS_WORDS.test(action.label)) {
+        if (isExplicitIssueStatusChange(action, ctx)) return { decision: 'allow' }
         return { decision: 'confirm', why: `This changes a task's status. Confirm that this exact task is assigned to you before clicking “${action.label}”.` }
       }
-      if (RISKY_WORDS.test(action.label)) return { decision: 'confirm', why: `Click “${action.label}”?` }
+      if (RISKY_WORDS.test(action.label) && !isExactRequestedMessageSend(action, ctx)) return { decision: 'confirm', why: `Click “${action.label}”?` }
       break
     case 'type': {
       if (action.text.length > AGENT_LIMITS.typeChars) return { decision: 'block', why: 'That is more text than SmartCursor types for you.' }
@@ -180,6 +189,7 @@ export function checkAction(action: AgentAction, ctx: GuardContext): Verdict {
       if (BLOCKED_KEYS.has(keys)) {
         return { decision: 'block', why: `The shortcut ${action.keys} can delete files, force quit or log out, so it is blocked.` }
       }
+      if ((keys === 'return' || keys === 'cmd+return') && isExactRequestedMessageSend(action, ctx)) break
       if (keys === 'cmd+q' || keys === 'cmd+w' || keys === 'return' || keys === 'cmd+return') {
         return { decision: 'confirm', why: keys === 'cmd+q' ? `Quit ${ctx.frontAppName || 'this app'}?` : keys === 'cmd+w' ? 'Close this window?' : 'Press Return (this may send or submit)?' }
       }
@@ -209,8 +219,45 @@ export function checkAction(action: AgentAction, ctx: GuardContext): Verdict {
     default:
       break
   }
-  if (action.risky) return { decision: 'confirm', why: action.reason || 'The AI marked this step as risky.' }
+  // The screenshot model can conservatively tag harmless navigation as risky (for example,
+  // choosing a conversation before composing a message). In Allow all mode, trust the
+  // concrete rules above instead: they still catch Send, Submit, Delete, payment and access
+  // controls, but a generic model flag no longer interrupts ordinary navigation.
+  if (action.risky && !ctx.allowAll) return { decision: 'confirm', why: action.reason || 'The AI marked this step as risky.' }
   return { decision: 'allow' }
+}
+
+/**
+ * An Allow all workflow may send exactly the short message and recipient the user named in its
+ * original goal. It cannot use this path for a vague “send a message” request, a different
+ * recipient, or different text.
+ */
+function isExactRequestedMessageSend(action: Extract<AgentAction, { kind: 'click' | 'key' }>, ctx: GuardContext): boolean {
+  if (!ctx.allowAll) return false
+  const goal = ctx.goal ?? ''
+  const match = goal.match(/\bsend\s+(?:a\s+)?(?:(?:["“'])(.+?)(?:["”'])|(.+?))\s+(?:message\s+)?to\s+([^.!?]+?)(?:[.!?]|$)/i)
+  if (!match) return false
+  const message = (match[1] ?? match[2] ?? '').trim().toLowerCase()
+  const recipient = match[3].trim().toLowerCase()
+  if (!message || !recipient) return false
+
+  const typed = ctx.history.some((item) => item.toLowerCase().includes(`type “${message}”`))
+  const selectedRecipient = ctx.history.some((item) => item.toLowerCase().includes(recipient))
+  const isSendControl = action.kind === 'click' ? /\bsend\b/i.test(action.label) : /^(?:return|cmd\+return)$/i.test(normalizeKeys(action.keys))
+  return typed && selectedRecipient && isSendControl
+}
+
+/**
+ * A typed request for one named issue is the user's approval for that issue only. Ownership-scoped
+ * requests remain guarded because screenshot-only automation cannot prove the assignee safely.
+ */
+function isExplicitIssueStatusChange(action: Extract<AgentAction, { kind: 'click' }>, ctx: GuardContext): boolean {
+  const goal = ctx.goal ?? ''
+  if (/\b(?:assigned\s+to\s+me|my\s+(?:jira\s+)?tasks?)\b/i.test(goal)) return false
+  const issue = goal.match(/\b[A-Z][A-Z0-9]+-\d+\b/)?.[0]
+  if (!issue) return false
+  const issuePattern = new RegExp(`\\b${issue.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i')
+  return issuePattern.test(action.label) || ctx.history.some((item) => issuePattern.test(item))
 }
 
 export function describeAction(action: AgentAction): string {

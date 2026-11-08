@@ -31,6 +31,7 @@ export interface ContextSnapshot {
   warnings: string[]
   vscode?: {
     fileName: string
+    workspaceFolder?: string
     languageId: string
     surrounding: string
     diagnostics: DiagnosticItem[]

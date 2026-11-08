@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { actionTarget, applyWorkspaceDestination, checkAction, completedGoalSummary, normalizeKeys, parseAgentAction, resolveHomePath, SMARTCURSOR_JIRA_BACKLOG_URL, type AgentAction, type GuardContext } from '../src/shared/agent'
+import { buildAgentPrompt } from '../src/shared/prompts'
 
 const ctx: GuardContext = { frontBundleId: 'com.google.Chrome', frontAppName: 'Google Chrome', homeDir: '/Users/dev', history: [] }
 const click = (label: string, risky = false): AgentAction => ({ kind: 'click', label, box: [1, 1, 2, 2], double: false, risky, reason: '' })
@@ -30,6 +31,31 @@ describe('guardrails', () => {
     expect(checkAction(click('Done'), ctx).decision).toBe('confirm')
     expect(checkAction(click('Mark as complete'), ctx).decision).toBe('confirm')
     expect(checkAction({ kind: 'key', keys: 'return', risky: false, reason: '' }, ctx).decision).toBe('confirm')
+  })
+
+  it('does not interrupt Allow all for a chat-thread selection merely marked risky by the model', () => {
+    expect(checkAction(click('Dev Gandhi', true), { ...ctx, allowAll: true }).decision).toBe('allow')
+    expect(checkAction(click('Send', true), { ...ctx, allowAll: true }).decision).toBe('confirm')
+  })
+
+  it('allows an exact message to its named recipient in Allow all mode', () => {
+    const sendGoal = {
+      ...ctx,
+      allowAll: true,
+      goal: 'Send Hi message to Dev Gandhi.',
+      history: ['click “Dev Gandhi”', 'type “Hi”']
+    }
+    expect(checkAction(click('Send'), sendGoal).decision).toBe('allow')
+    expect(checkAction({ kind: 'key', keys: 'return', risky: false, reason: '' }, sendGoal).decision).toBe('allow')
+    expect(checkAction(click('Send'), { ...sendGoal, goal: 'Send a message to Dev Gandhi.' }).decision).toBe('confirm')
+  })
+
+  it('allows a status change only for the exact Jira issue explicitly named in the workflow goal', () => {
+    const jira = { ...ctx, goal: 'Commit and push to the test branch, then mark SCRUM-8 as done.', history: [] }
+    expect(checkAction(click('To Do dropdown for SCRUM-8'), jira).decision).toBe('allow')
+    expect(checkAction(click('Done'), { ...jira, history: ['click “To Do dropdown for SCRUM-8”'] }).decision).toBe('allow')
+    expect(checkAction(click('To Do dropdown for SCRUM-9'), jira).decision).toBe('confirm')
+    expect(checkAction(click('To Do dropdown for SCRUM-8'), { ...jira, goal: 'Mark my tasks assigned to me as done.' }).decision).toBe('confirm')
   })
 
   it('blocks destructive shortcuts however they are written', () => {
@@ -86,5 +112,29 @@ describe('workflow progression', () => {
     expect(action).toMatchObject({ kind: 'open_url', url: SMARTCURSOR_JIRA_BACKLOG_URL })
     const app = applyWorkspaceDestination('Open Jira', { kind: 'open_app', name: 'Jira', risky: false, reason: '' })
     expect(app).toMatchObject({ kind: 'open_url', url: SMARTCURSOR_JIRA_BACKLOG_URL })
+  })
+
+  it('safely plans a staged-only VS Code commit and push followed by completing SCRUM-8 in Jira', () => {
+    const goal = 'Commit and push my latest code to the test branch from VS Code, with message testing, then go to Jira in Chrome and mark my SCRUM-8 ticket as done.'
+    const prompt = buildAgentPrompt(goal, 'Visual Studio Code', [], [])
+
+    // The planner receives the branch-verification requirement before it can offer a push.
+    expect(prompt).toContain('active VS Code branch exactly matches the branch named in the goal')
+    expect(prompt).toMatch(/never use a terminal/i)
+    expect(prompt).toContain('use only files that are already staged')
+    expect(prompt).toContain('Type the exact commit message supplied in the goal')
+    expect(prompt).toContain('Only after a successful push may you open Jira')
+    expect(prompt).toContain('exact issue key')
+
+    // Staging is never automated. Publishing and changing a Jira issue are always separately
+    // approved—even in Allow all.
+    expect(checkAction(click('Stage All Changes'), { ...ctx, frontBundleId: 'com.microsoft.VSCode', frontAppName: 'Visual Studio Code' }).decision).toBe('block')
+    expect(checkAction(click('Commit'), { ...ctx, frontBundleId: 'com.microsoft.VSCode', frontAppName: 'Visual Studio Code' }).decision).toBe('confirm')
+    expect(checkAction(click('Push'), { ...ctx, frontBundleId: 'com.microsoft.VSCode', frontAppName: 'Visual Studio Code' }).decision).toBe('confirm')
+    expect(checkAction(click('Done'), { ...ctx, frontBundleId: 'com.google.Chrome', frontAppName: 'Google Chrome' }).decision).toBe('confirm')
+
+    // The Jira navigation action is pinned to the intended project backlog.
+    expect(applyWorkspaceDestination(goal, { kind: 'open_url', url: 'https://jira.com', risky: false, reason: '' }))
+      .toMatchObject({ kind: 'open_url', url: SMARTCURSOR_JIRA_BACKLOG_URL })
   })
 })

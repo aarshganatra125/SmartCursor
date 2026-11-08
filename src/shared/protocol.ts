@@ -9,6 +9,7 @@ export interface BridgeContext {
   title?: string
   pageExcerpt?: string
   fileName?: string
+  workspaceFolder?: string
   languageId?: string
   surrounding?: string
   diagnostics?: DiagnosticItem[]
@@ -18,6 +19,7 @@ export type BridgeRequest =
   | { type: 'request-context'; includePage?: boolean }
   | { type: 'insert-text'; text: string }
   | { type: 'apply-edit'; text: string }
+  | { type: 'git-commit-push'; branch: string; message: string; workspaceFolder: string }
 
 export type BridgeCommand = BridgeRequest & { id: string }
 
@@ -59,6 +61,7 @@ export function parseBridgeContext(value: unknown): BridgeContext | null {
     title: asString(value.title, 500) ?? undefined,
     pageExcerpt: asString(value.pageExcerpt, LIMITS.page) ?? undefined,
     fileName: asString(value.fileName, 300) ?? undefined,
+    workspaceFolder: asString(value.workspaceFolder, 1_000) ?? undefined,
     languageId: asString(value.languageId, 80) ?? undefined,
     surrounding: asString(value.surrounding, LIMITS.surrounding) ?? undefined,
     diagnostics

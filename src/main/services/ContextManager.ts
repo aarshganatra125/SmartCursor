@@ -38,6 +38,7 @@ export class ContextManager {
       selectionSource = 'vscode'
       vscodeContext = {
         fileName: prefill.context.fileName ?? '',
+        workspaceFolder: prefill.context.workspaceFolder,
         languageId: prefill.context.languageId ?? '',
         surrounding: truncate(prefill.context.surrounding ?? '', LIMITS.surrounding),
         diagnostics: prefill.context.diagnostics ?? []
@@ -60,6 +61,7 @@ export class ContextManager {
         selectionSource = 'vscode'
         vscodeContext = {
           fileName: context.fileName ?? '',
+          workspaceFolder: context.workspaceFolder,
           languageId: context.languageId ?? '',
           surrounding: truncate(context.surrounding ?? '', LIMITS.surrounding),
           diagnostics: context.diagnostics ?? []

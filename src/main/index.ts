@@ -26,6 +26,7 @@ import { GlobalShortcutManager } from './services/GlobalShortcutManager'
 import { ActionExecutionService } from './services/ActionExecutionService'
 import { AssistantController } from './services/AssistantController'
 import { MouseTriggerService } from './services/MouseTriggerService'
+import { GitWorkflowService } from './services/GitWorkflowService'
 import { ComputerAgent } from './services/ComputerAgent'
 
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals')
@@ -76,10 +77,11 @@ app.whenReady().then(async () => {
   const shortcuts = new GlobalShortcutManager(settings, () => gateway.open())
   const actions = new ActionExecutionService(bridge, chrome, vscode, windows)
   const mouse = new MouseTriggerService(bridge, settings, () => gateway.openAtPointer())
-  const agent = new ComputerAgent(bridge, screenshots, ai, windows)
+  const git = new GitWorkflowService(vscode)
+  const agent = new ComputerAgent(bridge, screenshots, ai, windows, git)
   const controller = new AssistantController(
     windows, shortcuts, context, conversations, sessions, settings, secure, scores,
-    permissions, integrations, ai, actions, screenshots, ocr, chrome, mouse, agent
+    permissions, integrations, ai, actions, screenshots, ocr, chrome, vscode, mouse, agent
   )
   gateway.open = () => void controller.open()
   gateway.settings = () => controller.openSettings()

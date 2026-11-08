@@ -11,6 +11,7 @@ import type { AIService } from './AIService'
 import type { DesktopWindowManager } from './DesktopWindowManager'
 import type { NativeBridge } from './NativeBridge'
 import type { ScreenshotService } from './ScreenshotService'
+import type { GitWorkflowService } from './GitWorkflowService'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -33,7 +34,8 @@ export class ComputerAgent {
     private bridge: NativeBridge,
     private screenshots: ScreenshotService,
     private ai: AIService,
-    private windows: DesktopWindowManager
+    private windows: DesktopWindowManager,
+    private git: GitWorkflowService
   ) {}
 
   running(): boolean {
@@ -44,7 +46,7 @@ export class ComputerAgent {
     if (this.current) this.current.stopped = true
   }
 
-  async start(input: { goal: string; mode: 'ask' | 'auto'; appName: string; bundleId: string }): Promise<void> {
+  async start(input: { goal: string; mode: 'ask' | 'auto'; appName: string; bundleId: string; workspaceFolder?: string }): Promise<void> {
     this.stop()
     if (!this.bridge.installed) {
       this.message(screen.getDisplayNearestPoint(screen.getCursorScreenPoint()), 'Do it needs the macOS helper. Run npm run build:native.', 6000)
@@ -64,6 +66,16 @@ export class ComputerAgent {
     log.info('Agent started', { mode: input.mode })
 
     try {
+      const gitWorkflow = await this.git.run(input.goal, input.workspaceFolder)
+      if (gitWorkflow.handled && !gitWorkflow.ok) {
+        this.message(run.display, gitWorkflow.error, 8_000)
+        finished = true
+        return
+      }
+      if (gitWorkflow.handled && gitWorkflow.ok) {
+        history.push(`Git workflow completed: ${gitWorkflow.note}`)
+        notes.push(gitWorkflow.note)
+      }
       for (let step = 1; step <= AGENT_LIMITS.steps; step += 1) {
         if (run.stopped) break
         if (Date.now() > deadline) {
@@ -128,7 +140,7 @@ export class ComputerAgent {
           continue
         }
 
-        const verdict = checkAction(action, { frontBundleId: front.bundleId, frontAppName: front.name, homeDir: homedir(), history })
+        const verdict = checkAction(action, { frontBundleId: front.bundleId, frontAppName: front.name, homeDir: homedir(), goal: input.goal, history, allowAll: input.mode === 'auto' })
         log.info('Agent step', { step, kind: action.kind, verdict: verdict.decision })
         if (verdict.decision === 'block') {
           this.message(run.display, `Stopped for safety: ${verdict.why}`, 8000)

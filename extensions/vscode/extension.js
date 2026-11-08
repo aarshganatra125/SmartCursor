@@ -65,8 +65,10 @@ function request(method, pathname, bridge, body, timeout = 25000) {
 
 function editorContext() {
   const editor = vscode.window.activeTextEditor
-  if (!editor) return { selection: '', fileName: '', languageId: '', surrounding: '', diagnostics: [] }
+  const fallbackWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
+  if (!editor) return { selection: '', fileName: '', workspaceFolder: fallbackWorkspace, languageId: '', surrounding: '', diagnostics: [] }
   const document = editor.document
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath ?? fallbackWorkspace
   const start = Math.max(0, editor.selection.start.line - 40)
   const end = Math.min(document.lineCount - 1, editor.selection.end.line + 40)
   const diagnostics = vscode.languages.getDiagnostics(document.uri)
@@ -80,6 +82,7 @@ function editorContext() {
   return {
     selection: document.getText(editor.selection),
     fileName: path.basename(document.fileName),
+    workspaceFolder,
     languageId: document.languageId,
     surrounding: document.getText(new vscode.Range(start, 0, end, document.lineAt(end).text.length)),
     diagnostics
@@ -94,6 +97,60 @@ async function applyEdit(text) {
     else builder.replace(editor.selection, text)
   })
   return applied ? { ok: true } : { ok: false, error: 'VS Code rejected the edit.' }
+}
+
+function activeWorkspaceFolder() {
+  const editor = vscode.window.activeTextEditor
+  return (editor && vscode.workspace.getWorkspaceFolder(editor.document.uri)?.uri.fsPath)
+    || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+    || ''
+}
+
+function runTask(task) {
+  return new Promise(async (resolve) => {
+    let execution
+    const timer = setTimeout(() => {
+      disposable.dispose()
+      resolve({ ok: false, error: 'The VS Code Git task timed out.' })
+    }, 120000)
+    const disposable = vscode.tasks.onDidEndTaskProcess((event) => {
+      if (event.execution !== execution) return
+      clearTimeout(timer)
+      disposable.dispose()
+      resolve(event.exitCode === 0 ? { ok: true } : { ok: false, error: `Git task failed with exit code ${event.exitCode ?? 'unknown'}. Check the VS Code terminal.` })
+    })
+    try {
+      execution = await vscode.tasks.executeTask(task)
+    } catch (error) {
+      clearTimeout(timer)
+      disposable.dispose()
+      resolve({ ok: false, error: error instanceof Error ? error.message : 'VS Code could not start the Git task.' })
+    }
+  })
+}
+
+/** Run the two fixed Git commands in VS Code's visible integrated terminal. */
+async function commitAndPush(branch, message, workspaceFolder) {
+  if (!/^[A-Za-z0-9._/-]+$/.test(branch) || !message || message.length > 200) return { ok: false, error: 'Invalid Git branch or commit message.' }
+  const workspace = activeWorkspaceFolder()
+  if (!workspace || path.resolve(workspace) !== path.resolve(String(workspaceFolder || ''))) {
+    return { ok: false, error: 'VS Code is not focused on the verified repository workspace.' }
+  }
+  const run = async (name, args) => {
+    const task = new vscode.Task(
+      { type: 'smartcursor-git', task: name },
+      vscode.TaskScope.Workspace,
+      name,
+      'SmartCursor',
+      new vscode.ProcessExecution('git', args, { cwd: workspace }),
+      []
+    )
+    task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, clear: false, showReuseMessage: false }
+    return runTask(task)
+  }
+  const committed = await run('SmartCursor: git commit', ['commit', '-m', message])
+  if (!committed.ok) return committed
+  return run('SmartCursor: git push', ['push', 'origin', branch])
 }
 
 function delay(ms) {
@@ -189,7 +246,8 @@ function activate(context) {
         else if (action.type === 'apply-edit') {
           lastText = String(action.text ?? '')
           result = await applyEdit(lastText)
-        } else result = { ok: false, error: 'Unsupported action.' }
+        } else if (action.type === 'git-commit-push') result = await commitAndPush(String(action.branch ?? ''), String(action.message ?? ''), String(action.workspaceFolder ?? ''))
+        else result = { ok: false, error: 'Unsupported action.' }
         await request('POST', '/v1/result?client=vscode', bridge, { id: action.id, ...result }, 5000).promise
       } catch (error) {
         current = null

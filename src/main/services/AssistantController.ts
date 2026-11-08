@@ -24,6 +24,7 @@ import type { ChromeIntegration } from './ChromeIntegration'
 import type { MouseTriggerService } from './MouseTriggerService'
 import type { SportsService } from './SportsService'
 import type { ComputerAgent } from './ComputerAgent'
+import type { VSCodeIntegration } from './VSCodeIntegration'
 import type { AgentMode } from '@shared/agent'
 
 export class AssistantController {
@@ -55,6 +56,7 @@ export class AssistantController {
     private screenshots: ScreenshotService,
     private ocr: OCRService,
     private chrome: ChromeIntegration,
+    private vscode: VSCodeIntegration,
     private mouse: MouseTriggerService,
     private agent: ComputerAgent
   ) {}
@@ -280,7 +282,14 @@ export class AssistantController {
     if (mode !== 'show') {
       // "Do it": SmartCursor performs the steps (ask = approve each, auto = allow all but risky ones).
       this.windows.hideFloating()
-      void this.agent.start({ goal, mode, appName: session.snapshot.app.name, bundleId: session.snapshot.app.bundleId })
+      let workspaceFolder = session.snapshot.vscode?.workspaceFolder
+      // The assistant may have been opened from the desktop or another app. Ask the paired VS Code
+      // extension for its current workspace instead of requiring VS Code to be frontmost first.
+      if (!workspaceFolder && /\bcommit\b/i.test(goal) && /\bpush\b/i.test(goal) && this.vscode.connected()) {
+        const context = await this.vscode.requestContext()
+        workspaceFolder = context?.ok ? context.context?.workspaceFolder : undefined
+      }
+      void this.agent.start({ goal, mode, appName: session.snapshot.app.name, bundleId: session.snapshot.app.bundleId, workspaceFolder })
       return { ok: true }
     }
     const pointer = screen.getCursorScreenPoint()
