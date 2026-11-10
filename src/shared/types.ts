@@ -31,6 +31,7 @@ export interface ContextSnapshot {
   warnings: string[]
   vscode?: {
     fileName: string
+    workspaceFolder?: string
     languageId: string
     surrounding: string
     diagnostics: DiagnosticItem[]
@@ -50,6 +51,8 @@ export interface PanelPayload {
   snapshot: ContextSnapshot
   directApply: ApplyMode
   applyBlockedReason?: string
+  /** Whether the popup grows downward from the cursor or upward from it. */
+  placement: 'below' | 'above'
 }
 
 export interface PrivacySettings {
@@ -62,6 +65,10 @@ export interface SettingsData {
   theme: ThemePreference
   model: string
   shortcut: string
+  /** macOS: Shift + right-click anywhere opens the popup. */
+  mouseTrigger: boolean
+  /** The toolbar trails the pointer after it opens, until the user heads for it or uses it. */
+  followPointer: boolean
   baseUrl: string
   integrations: { chrome: boolean; vscode: boolean }
   privacy: PrivacySettings
@@ -89,10 +96,20 @@ export interface IntegrationSnapshot {
   vscode: ClientConnection
 }
 
+export interface MouseTriggerStatus {
+  supported: boolean
+  enabled: boolean
+  running: boolean
+  error: string | null
+}
+
 export interface Bootstrap {
   settings: SettingsData
+  mouseTrigger: MouseTriggerStatus
   hasApiKey: boolean
   apiKeyHint: string | null
+  hasOddsApiKey: boolean
+  oddsApiKeyHint: string | null
   shortcutRegistered: boolean
   shortcutError: string | null
   platform: string
@@ -118,11 +135,32 @@ export interface HistoryItem {
   messages: HistoryMessage[]
 }
 
+export interface WebSource {
+  title: string
+  url: string
+}
+
 export interface AiResult {
   ok: boolean
   requestId: string
   text: string
   insertText: string
+  error?: string
+  /** Pages Google Search returned when the answer was grounded on the web. */
+  sources?: WebSource[]
+  /** The searches Gemini ran; Google asks apps to show these as search suggestions. */
+  searchQueries?: string[]
+}
+
+/** What the ghost-cursor overlay should draw, in coordinates local to the overlay window. */
+export type GhostPayload =
+  | { kind: 'searching'; query: string; pointer: { x: number; y: number } }
+  | { kind: 'found'; query: string; step: number; final: boolean; verb?: string; label: string; hint: string; pointer: { x: number; y: number }; target: { x: number; y: number; width: number; height: number } }
+  | { kind: 'message'; text: string; pointer: { x: number; y: number } }
+
+export interface GhostResult {
+  ok: boolean
+  found?: boolean
   error?: string
 }
 

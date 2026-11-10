@@ -1,4 +1,4 @@
-import type { BridgeContext, BridgeResult } from '@shared/protocol'
+import type { BridgeResult } from '@shared/protocol'
 import type { IntegrationServer } from './IntegrationServer'
 
 export class ChromeIntegration {
@@ -14,9 +14,5 @@ export class ChromeIntegration {
 
   insertText(text: string): Promise<BridgeResult | null> {
     return this.server.request('chrome', { type: 'insert-text', text }, 2500)
-  }
-
-  readContext(result: BridgeResult | null): BridgeContext | null {
-    return result?.ok ? result.context ?? null : null
   }
 }

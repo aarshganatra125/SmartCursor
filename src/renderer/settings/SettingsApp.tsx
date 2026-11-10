@@ -105,6 +105,22 @@ function General({ data, onChange, onError }: { data: Bootstrap; onChange: () =>
         <p className="mt-1 text-[12px]">{data.shortcutRegistered ? 'Shortcut is registered.' : data.shortcutError || 'Shortcut is not registered.'}</p>
         <button type="button" className={buttonClass} onClick={() => void saveShortcut(shortcut, onChange, onError)}>Save shortcut</button>
       </Field>
+      <div className="space-y-1">
+        <Check label="Toolbar follows the pointer" checked={data.settings.followPointer} onChange={(value) => void save({ followPointer: value }, onChange, onError)} />
+        <p className="pl-6 text-[12px] text-zinc-500">After it opens, the toolbar glides along with your pointer. It stops as soon as you move toward it, and stays put once you click, type or drag it.</p>
+      </div>
+      {data.mouseTrigger.supported && (
+        <div className="space-y-1">
+          <Check label="Open with Shift + right-click anywhere" checked={data.settings.mouseTrigger} onChange={(value) => void save({ mouseTrigger: value }, onChange, onError)} />
+          <p className="pl-6 text-[12px] text-zinc-500">Hold Shift and right-click (or Shift + two-finger click) to open SmartCursor at the pointer. That click does not reach the app underneath.</p>
+          {data.settings.mouseTrigger && (
+            <p className={`pl-6 text-[12px] ${data.mouseTrigger.running ? 'text-emerald-600' : 'text-amber-700 dark:text-amber-300'}`}>
+              {data.mouseTrigger.running ? 'Active.' : data.mouseTrigger.error || 'Starting…'}
+              {!data.mouseTrigger.running && data.mouseTrigger.error?.includes('Accessibility') && ' Allow it in Permissions, then come back here.'}
+            </p>
+          )}
+        </div>
+      )}
       <p className="text-[12px] text-zinc-500">Local store: {data.storage === 'sqlite' ? 'SQLite' : 'JSON fallback'}. Platform: {data.platform}.</p>
     </div>
   )
@@ -112,6 +128,7 @@ function General({ data, onChange, onError }: { data: Bootstrap; onChange: () =>
 
 function Ai({ data, onChange, onError }: { data: Bootstrap; onChange: () => Promise<void>; onError: (value: string | null) => void }) {
   const [key, setKey] = useState('')
+  const [oddsKey, setOddsKey] = useState('')
   const [model, setModel] = useState(data.settings.model)
   const [baseUrl, setBaseUrl] = useState(data.settings.baseUrl)
   return (
@@ -119,10 +136,18 @@ function Ai({ data, onChange, onError }: { data: Bootstrap; onChange: () => Prom
       <h2 className="text-xl font-semibold tracking-tight">AI</h2>
       <Field label="Gemini API key">
         <p className="mb-2 text-[12px] text-zinc-500">{data.hasApiKey ? `Saved in the system keychain (${data.apiKeyHint}).` : 'No key saved. The key never goes into the renderer after you save it.'}</p>
-        <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="sk-…" className={inputClass} />
+        <input type="password" value={key} onChange={(event) => setKey(event.target.value)} placeholder="AIza…" className={inputClass} />
         <div className="mt-2 flex gap-2">
           <button type="button" className={buttonClass} onClick={() => void saveKey(key, setKey, onChange, onError)}>Save key</button>
           <button type="button" className={quietButton} onClick={() => void clearKey(onChange, onError)}>Remove key</button>
+        </div>
+      </Field>
+      <Field label="The Odds API key (live scores)">
+        <p className="mb-2 text-[12px] text-zinc-500">{data.hasOddsApiKey ? `Saved in the system keychain (${data.oddsApiKeyHint}). Live-score questions use The Odds API directly, without Gemini Search.` : 'No key saved. Add a free The Odds API key to enable live scores.'}</p>
+        <input type="password" value={oddsKey} onChange={(event) => setOddsKey(event.target.value)} placeholder="Odds API key" className={inputClass} />
+        <div className="mt-2 flex gap-2">
+          <button type="button" className={buttonClass} onClick={() => void saveOddsKey(oddsKey, setOddsKey, onChange, onError)}>Save key</button>
+          <button type="button" className={quietButton} onClick={() => void clearOddsKey(onChange, onError)}>Remove key</button>
         </div>
       </Field>
       <Field label="Model">
@@ -178,15 +203,14 @@ function Integrations({ data, onChange, onError }: { data: Bootstrap; onChange: 
         <p>Local address: http://127.0.0.1:{integrations.port ?? '—'}</p>
         <p className="mt-1 break-all">Pairing token: {integrations.token}</p>
         <p className="mt-1 break-all">Bridge file for VS Code: {integrations.bridgePath}</p>
-        <div className="mt-3 flex gap-2">
-          <button type="button" className={quietButton} onClick={() => void window.smartcursor.copyText(`http://127.0.0.1:${integrations.port ?? ''}`)}>Copy address</button>
-          <button type="button" className={quietButton} onClick={() => integrations.token && void window.smartcursor.copyText(integrations.token)}>Copy token</button>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button type="button" className={quietButton} disabled={!integrations.port || !integrations.token} onClick={() => void window.smartcursor.copyText(`http://127.0.0.1:${integrations.port ?? ''}#${integrations.token ?? ''}`)}>Copy pairing code</button>
           <button type="button" className={quietButton} onClick={() => void rotate(onChange, onError)}>Rotate token</button>
         </div>
       </div>
       <div className="text-[13px] leading-5 text-zinc-600 dark:text-zinc-300">
-        <p>Chrome: open chrome://extensions, enable Developer mode, and load the `extensions/chrome` folder. Paste the address and token into the extension options.</p>
-        <p className="mt-2">VS Code: copy `extensions/vscode` into your extensions folder or run the extension from that folder. It reads the bridge file itself. Reload VS Code after SmartCursor is running.</p>
+        <p>Chrome: open chrome://extensions, enable Developer mode, and load the `extensions/chrome` folder. Click Copy pairing code above and paste it into the extension options. Then right-click any selection and choose Ask SmartCursor.</p>
+        <p className="mt-2">VS Code: copy `extensions/vscode` into your extensions folder and reload VS Code. It pairs on its own using the bridge file. Right-click in the editor and choose Ask SmartCursor, or click SmartCursor in the status bar.</p>
       </div>
     </div>
   )
@@ -201,7 +225,7 @@ function Privacy({ data, onChange, onError }: { data: Bootstrap; onChange: () =>
       <Check label="Store conversation history locally" checked={privacy.storeHistory} onChange={(value) => update({ storeHistory: value })} />
       <Check label="Allow a temporary Copy when accessibility cannot read the selection" checked={privacy.allowClipboardFallback} onChange={(value) => update({ allowClipboardFallback: value })} />
       <Check label="Allow screenshot capture and OCR after I click Capture" checked={privacy.allowScreenshotOcr} onChange={(value) => update({ allowScreenshotOcr: value })} />
-      <p className="text-[13px] leading-5 text-zinc-600 dark:text-zinc-300">Selected text is shown in the panel before any model request. Screenshots are deleted after OCR and are not written to the database. API keys stay in the operating system keychain. SmartCursor does not send email, submit forms, or run terminal commands.</p>
+      <p className="text-[13px] leading-5 text-zinc-600 dark:text-zinc-300">Selected text is shown in the panel before any model request. Screenshots are deleted after OCR and are not written to the database. Voice input records only after you click the mic, sends one short clip to Gemini for transcription, then discards the audio. API keys stay in the operating system keychain. SmartCursor does not send email, submit forms, or run terminal commands.</p>
     </div>
   )
 }
@@ -290,6 +314,25 @@ async function saveKey(key: string, clear: (value: string) => void, onChange: ()
 async function clearKey(onChange: () => Promise<void>, onError: (value: string | null) => void) {
   const result = await window.smartcursor.clearApiKey()
   if (!result.ok) onError(result.error || 'Could not remove the key.')
+  else {
+    onError(null)
+    await onChange()
+  }
+}
+
+async function saveOddsKey(key: string, clear: (value: string) => void, onChange: () => Promise<void>, onError: (value: string | null) => void) {
+  const result = await window.smartcursor.setOddsApiKey(key)
+  if (!result.ok) onError(result.error || 'Could not save the Odds API key.')
+  else {
+    clear('')
+    onError(null)
+    await onChange()
+  }
+}
+
+async function clearOddsKey(onChange: () => Promise<void>, onError: (value: string | null) => void) {
+  const result = await window.smartcursor.clearOddsApiKey()
+  if (!result.ok) onError(result.error || 'Could not remove the Odds API key.')
   else {
     onError(null)
     await onChange()

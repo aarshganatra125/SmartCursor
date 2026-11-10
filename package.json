@@ -4,10 +4,11 @@
   "description": "Context-aware AI desktop assistant that works on top of the applications you already use.",
   "main": "./out/main/index.js",
   "scripts": {
-    "postinstall": "node scripts/build-native.mjs",
-    "dev": "electron-vite dev",
+    "postinstall": "node scripts/ensure-electron.mjs && node scripts/build-native.mjs",
+    "dev": "node scripts/electron-vite.mjs dev --watch",
     "build": "node scripts/build-native.mjs && electron-vite build",
-    "start": "electron-vite preview",
+    "build:native": "node scripts/build-native.mjs",
+    "start": "node scripts/electron-vite.mjs preview",
     "typecheck": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run",
     "check": "npm test && npm run typecheck"

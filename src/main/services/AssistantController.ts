@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { screen } from 'electron'
-import type { ApplyRequest, Bootstrap, CaptureResult, HistoryItem, PanelPayload, RunRequest, SettingsData } from '@shared/types'
+import type { ApplyRequest, Bootstrap, CaptureResult, GhostResult, HistoryItem, PanelPayload, RunRequest, SettingsData } from '@shared/types'
 import { LIMITS, MODEL_PRESETS } from '@shared/types'
 import { Ipc } from '@shared/ipc'
+import { boxToScreen, choosePlacement } from '@shared/geometry'
 import { truncate } from '@shared/text'
 import { errorMessage } from '../errors'
 import { log } from '../logger'
 import { ActionExecutionService, chooseApplyMode } from './ActionExecutionService'
 import type { AIService } from './AIService'
-import type { ContextManager } from './ContextManager'
+import type { ContextManager, ContextPrefill } from './ContextManager'
 import type { ConversationManager } from './ConversationManager'
 import type { DesktopWindowManager } from './DesktopWindowManager'
 import type { GlobalShortcutManager } from './GlobalShortcutManager'
@@ -20,10 +21,24 @@ import type { SecureStore } from './SecureStore'
 import { type LiveSession, SessionStore } from './SessionStore'
 import type { SettingsManager } from './SettingsManager'
 import type { ChromeIntegration } from './ChromeIntegration'
+import type { MouseTriggerService } from './MouseTriggerService'
+import type { SportsService } from './SportsService'
+import type { ComputerAgent } from './ComputerAgent'
+import type { VSCodeIntegration } from './VSCodeIntegration'
+import type { AgentMode } from '@shared/agent'
 
 export class AssistantController {
   private opening = false
   private runs = new Map<string, AbortController>()
+  private guide: {
+    goal: string
+    appName: string
+    display: Electron.Display
+    steps: string[]
+    final: boolean
+    busy: boolean
+    idle: NodeJS.Timeout | null
+  } | null = null
 
   constructor(
     private windows: DesktopWindowManager,
@@ -33,28 +48,52 @@ export class AssistantController {
     private sessions: SessionStore,
     private settings: SettingsManager,
     private secure: SecureStore,
+    private scores: SportsService,
     private permissions: PermissionManager,
     private integrations: IntegrationServer,
     private ai: AIService,
     private actions: ActionExecutionService,
     private screenshots: ScreenshotService,
     private ocr: OCRService,
-    private chrome: ChromeIntegration
+    private chrome: ChromeIntegration,
+    private vscode: VSCodeIntegration,
+    private mouse: MouseTriggerService,
+    private agent: ComputerAgent
   ) {}
 
-  async open(): Promise<void> {
-    if (this.windows.isFloatingVisible()) {
+  /**
+   * Open the popup at the cursor.
+   * The global shortcut toggles it; an extension's right-click "Ask SmartCursor" always reopens it
+   * with the context that extension already sent.
+   */
+  async open(options: { prefill?: ContextPrefill; toggle?: boolean } = {}): Promise<void> {
+    const toggle = options.toggle ?? true
+    // Opening SmartCursor while it is operating the Mac means "stop".
+    if (this.agent.running()) {
+      this.agent.stop()
+      return
+    }
+    if (this.guide) {
+      // While a guide waits and clicks cannot be watched, the shortcut means "next step".
+      if (toggle && !this.mouse.canWatchClicks()) {
+        this.advanceGuide()
+        return
+      }
+      this.endGuide()
+    }
+    if (toggle && this.windows.isFloatingVisible()) {
       this.windows.hideFloating()
       return
     }
     if (this.opening) return
     this.opening = true
+    this.cancel()
     try {
       const point = screen.getCursorScreenPoint()
       const display = screen.getDisplayNearestPoint(point)
       let snapshot
       try {
-        snapshot = await this.context.capture()
+        snapshot = await this.context.capture(options.prefill)
       } catch (error) {
         snapshot = {
           id: randomUUID(),
@@ -78,11 +117,13 @@ export class AssistantController {
         response: '',
         insertText: '',
         directApply: apply.mode,
-        applyBlockedReason: apply.reason
+        applyBlockedReason: apply.reason,
+        turns: []
       }
       this.sessions.set(conversationId, session)
-      const payload: PanelPayload = { conversationId, snapshot, directApply: apply.mode, applyBlockedReason: apply.reason }
-      this.windows.showFloating(payload)
+      const placement = choosePlacement(point.y, display.workArea)
+      const payload: PanelPayload = { conversationId, snapshot, directApply: apply.mode, applyBlockedReason: apply.reason, placement }
+      this.windows.showFloating(payload, point, display.workArea)
       log.info('Assistant opened', { category: snapshot.app.category, source: snapshot.selectionSource, selectionLength: snapshot.selection.length })
     } finally {
       this.opening = false
@@ -91,6 +132,15 @@ export class AssistantController {
 
   hide(): void {
     this.windows.hideFloating()
+  }
+
+  resize(width: number, height: number): void {
+    this.windows.resizeFloating(width, height)
+  }
+
+  /** The user clicked or typed in the popup, so it stops following the pointer. */
+  pinPopup(): void {
+    this.windows.pinFloating()
   }
 
   openSettings(): void {
@@ -105,10 +155,14 @@ export class AssistantController {
     const settings = this.settings.get()
     this.windows.setTheme(settings.theme)
     const shortcut = this.shortcuts.status()
+    this.mouse.sync()
     return {
       settings,
+      mouseTrigger: this.mouse.status(),
       hasApiKey: this.secure.hasApiKey(),
       apiKeyHint: this.secure.hint(),
+      hasOddsApiKey: this.scores.hasApiKey(),
+      oddsApiKeyHint: this.scores.hint(),
       shortcutRegistered: shortcut.registered,
       shortcutError: shortcut.error,
       platform: process.platform,
@@ -124,6 +178,7 @@ export class AssistantController {
     const next = this.settings.update(patch)
     this.windows.setTheme(next.theme)
     if (patch.shortcut) this.shortcuts.register()
+    if (patch.mouseTrigger !== undefined) this.mouse.sync()
     this.windows.broadcast(Ipc.integrationsChanged, this.integrations.snapshot())
     return next
   }
@@ -143,6 +198,15 @@ export class AssistantController {
     this.secure.clear()
   }
 
+  setOddsApiKey(key: string): { hint: string | null } {
+    this.scores.setApiKey(key)
+    return { hint: this.scores.hint() }
+  }
+
+  clearOddsApiKey(): void {
+    this.scores.clearApiKey()
+  }
+
   async run(request: RunRequest, onDelta: (delta: string) => void): Promise<Awaited<ReturnType<AIService['run']>>> {
     const controller = new AbortController()
     const requestId = randomUUID()
@@ -156,6 +220,10 @@ export class AssistantController {
 
   cancel(): void {
     for (const controller of this.runs.values()) controller.abort()
+  }
+
+  transcribe(audio: string, mimeType: string) {
+    return this.ai.transcribe(audio, mimeType)
   }
 
   async apply(request: ApplyRequest) {
@@ -199,6 +267,150 @@ export class AssistantController {
     return { ok: true, excerpt: snapshot.chrome?.pageExcerpt, url: snapshot.chrome?.url }
   }
 
+  /**
+   * Ghost cursor guide: "where do I …?" → capture the display under the pointer, ask Gemini for the
+   * next control, and glide a ghost pointer to it. After the user clicks it, look again and point at
+   * the next one, until the goal is reached (Settings → Displays → Brightness). It never clicks.
+   * Clicks come from the Swift helper; without it, pressing the shortcut moves to the next step.
+   */
+  async ghost(conversationId: string, query: string, mode: AgentMode = 'show'): Promise<GhostResult> {
+    const session = this.sessions.get(conversationId)
+    if (!session) return { ok: false, error: 'This assistant session is no longer open.' }
+    const goal = query.trim().slice(0, 300)
+    if (!goal) return { ok: false, error: 'Say what you are looking for.' }
+    this.endGuide()
+    if (mode !== 'show') {
+      // "Do it": SmartCursor performs the steps (ask = approve each, auto = allow all but risky ones).
+      this.windows.hideFloating()
+      let workspaceFolder = session.snapshot.vscode?.workspaceFolder
+      // The assistant may have been opened from the desktop or another app. Ask the paired VS Code
+      // extension for its current workspace instead of requiring VS Code to be frontmost first.
+      if (!workspaceFolder && /\bcommit\b/i.test(goal) && /\bpush\b/i.test(goal) && this.vscode.connected()) {
+        const context = await this.vscode.requestContext()
+        workspaceFolder = context?.ok ? context.context?.workspaceFolder : undefined
+      }
+      void this.agent.start({ goal, mode, appName: session.snapshot.app.name, bundleId: session.snapshot.app.bundleId, workspaceFolder })
+      return { ok: true }
+    }
+    const pointer = screen.getCursorScreenPoint()
+    this.guide = {
+      goal,
+      appName: session.snapshot.app.name,
+      display: screen.getDisplayNearestPoint(pointer),
+      steps: [],
+      final: false,
+      busy: false,
+      idle: null
+    }
+    // Start listening now so the helper is up by the time step 1 is shown. Clicks are ignored while busy.
+    this.mouse.watchClicks(() => this.advanceGuide())
+    // Get the popup out of the way so it is not in the screenshot.
+    this.windows.hideFloating()
+    await this.guideStep(160)
+    return { ok: true }
+  }
+
+  /** Move to the next step: called on a click (or the shortcut, when clicks cannot be watched). */
+  private advanceGuide(): void {
+    const guide = this.guide
+    if (!guide || guide.busy) return
+    if (guide.final) {
+      this.showGhostMessage('Done ✓', 2200)
+      this.endGuide(false)
+      return
+    }
+    // Give menus and pages a moment to open before looking again.
+    void this.guideStep(650)
+  }
+
+  private async guideStep(settleMs: number): Promise<void> {
+    const guide = this.guide
+    if (!guide) return
+    guide.busy = true
+    if (guide.idle) clearTimeout(guide.idle)
+    this.windows.hideGhost()
+    await new Promise((resolve) => setTimeout(resolve, settleMs))
+    if (this.guide !== guide) return
+
+    const { display } = guide
+    let image: string
+    try {
+      image = await this.screenshots.captureDisplay({ id: display.id, width: display.size.width, height: display.size.height, scaleFactor: display.scaleFactor })
+    } catch (error) {
+      this.showGhostMessage(errorMessage(error), 6000)
+      this.endGuide(false)
+      return
+    }
+    if (this.guide !== guide) return
+
+    this.windows.showGhost(display.bounds, (origin) => ({ kind: 'searching', query: guide.goal, pointer: this.localPointer(origin) }), 35_000)
+    const located = await this.ai.locate({ query: guide.goal, appName: guide.appName, stepsDone: guide.steps, jpegBase64: image })
+    if (this.guide !== guide) return
+    if (!located.ok) {
+      this.showGhostMessage(located.error, 6000)
+      this.endGuide(false)
+      return
+    }
+    const { result } = located
+    if (!result.found || !result.box) {
+      const text = result.done
+        ? `Done ✓ ${result.hint}`.trim()
+        : result.hint || `Could not find “${guide.goal}” on this screen.`
+      this.showGhostMessage(text, 6000)
+      log.info('Ghost cursor', { found: false, done: result.done, step: guide.steps.length + 1 })
+      this.endGuide(false)
+      return
+    }
+
+    const step = guide.steps.length + 1
+    guide.steps.push(result.label || `step ${step}`)
+    guide.final = result.final
+    const clicks = this.mouse.canWatchClicks()
+    const next = result.final
+      ? ''
+      : clicks ? 'Click it and I’ll show the next step.' : 'Click it, then press the SmartCursor shortcut for the next step.'
+    const target = boxToScreen(result.box, display.bounds)
+    this.windows.showGhost(display.bounds, (origin) => ({
+      kind: 'found',
+      query: guide.goal,
+      step,
+      final: result.final,
+      label: result.label || guide.goal,
+      hint: [result.hint, next].filter(Boolean).join(' '),
+      pointer: this.localPointer(origin),
+      target: { x: target.x - origin.x, y: target.y - origin.y, width: target.width, height: target.height }
+    }), 60_000)
+    log.info('Ghost cursor', { found: true, step, final: result.final, clicks })
+
+    // Wait for the user's click on this step; stop guiding if nothing happens for a minute.
+    guide.idle = setTimeout(() => this.endGuide(), 60_000)
+    guide.busy = false
+    if (!clicks && result.final) {
+      // Nothing to wait for; leave the last pointer up for a while.
+      if (guide.idle) clearTimeout(guide.idle)
+      guide.idle = setTimeout(() => this.endGuide(), 12_000)
+    }
+  }
+
+  /** Stop guiding. By default also clears the overlay; pass false to leave a final message showing. */
+  private endGuide(hideOverlay = true): void {
+    const guide = this.guide
+    this.guide = null
+    if (guide?.idle) clearTimeout(guide.idle)
+    this.mouse.watchClicks(null)
+    if (hideOverlay && guide) this.windows.hideGhost()
+  }
+
+  private showGhostMessage(text: string, ms: number): void {
+    const display = this.guide?.display ?? screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+    this.windows.showGhost(display.bounds, (origin) => ({ kind: 'message', text, pointer: this.localPointer(origin) }), ms)
+  }
+
+  private localPointer(origin: { x: number; y: number }): { x: number; y: number } {
+    const pointer = screen.getCursorScreenPoint()
+    return { x: pointer.x - origin.x, y: pointer.y - origin.y }
+  }
+
   history(): HistoryItem[] {
     return this.conversations.list()
   }
@@ -207,8 +419,10 @@ export class AssistantController {
     this.conversations.delete(id)
   }
 
-  promptAccessibility() {
-    return this.permissions.promptAccessibility()
+  async promptAccessibility() {
+    const snapshot = await this.permissions.promptAccessibility()
+    this.mouse.sync()
+    return snapshot
   }
 
   openPermission(kind: 'accessibility' | 'screen') {
@@ -216,6 +430,7 @@ export class AssistantController {
   }
 
   refreshPermissions() {
+    this.mouse.sync()
     return this.permissions.snapshot()
   }
 

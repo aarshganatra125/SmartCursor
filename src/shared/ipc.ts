@@ -2,13 +2,20 @@ export const Ipc = {
   bootstrap: 'bootstrap:get',
   panelHide: 'panel:hide',
   panelCurrent: 'panel:current',
+  /** renderer → main (send): content size; the first report reveals the popup */
+  panelSize: 'panel:size',
+  /** renderer → main (send): the user clicked or typed, so stop following the pointer */
+  panelPin: 'panel:pin',
   settingsUpdate: 'settings:update',
   settingsOpen: 'settings:open',
   secretSet: 'secret:set',
   secretClear: 'secret:clear',
+  oddsSecretSet: 'odds-secret:set',
+  oddsSecretClear: 'odds-secret:clear',
   copyText: 'clipboard:write',
   aiRun: 'ai:run',
   aiCancel: 'ai:cancel',
+  voiceTranscribe: 'voice:transcribe',
   aiDelta: 'ai:delta',
   actionApply: 'action:apply',
   captureOcr: 'capture:ocr',
@@ -22,7 +29,10 @@ export const Ipc = {
   tokenRotate: 'integrations:rotate-token',
   themeChanged: 'theme:changed',
   integrationsChanged: 'integrations:changed',
-  panelOpen: 'panel:open'
+  panelOpen: 'panel:open',
+  ghostRun: 'ghost:run',
+  ghostShow: 'ghost:show',
+  openLink: 'link:open'
 } as const
 
 export type IpcChannel = (typeof Ipc)[keyof typeof Ipc]
@@ -35,9 +45,12 @@ export const ALLOWED_INVOKE = new Set<string>([
   Ipc.settingsOpen,
   Ipc.secretSet,
   Ipc.secretClear,
+  Ipc.oddsSecretSet,
+  Ipc.oddsSecretClear,
   Ipc.copyText,
   Ipc.aiRun,
   Ipc.aiCancel,
+  Ipc.voiceTranscribe,
   Ipc.actionApply,
   Ipc.captureOcr,
   Ipc.fetchPage,
@@ -47,5 +60,7 @@ export const ALLOWED_INVOKE = new Set<string>([
   Ipc.permissionsOpen,
   Ipc.permissionsRefresh,
   Ipc.shortcutSet,
-  Ipc.tokenRotate
+  Ipc.tokenRotate,
+  Ipc.ghostRun,
+  Ipc.openLink
 ])

@@ -15,4 +15,8 @@ export class VSCodeIntegration {
   applyEdit(text: string): Promise<BridgeResult | null> {
     return this.server.request('vscode', { type: 'apply-edit', text }, 2500)
   }
+
+  commitAndPush(branch: string, message: string, workspaceFolder: string): Promise<BridgeResult | null> {
+    return this.server.request('vscode', { type: 'git-commit-push', branch, message, workspaceFolder }, 120_000)
+  }
 }

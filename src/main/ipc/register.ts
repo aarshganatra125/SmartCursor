@@ -1,4 +1,4 @@
-import { clipboard, ipcMain, type IpcMainInvokeEvent } from 'electron'
+import { clipboard, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { ALLOWED_INVOKE, Ipc } from '@shared/ipc'
 import type { ApplyRequest, RunRequest, SettingsData } from '@shared/types'
 import { errorMessage } from '../errors'
@@ -17,12 +17,21 @@ export function registerIpc(controller: AssistantController, database: AppDataba
     })
   }
 
+  // Fire-and-forget messages from the popup.
+  ipcMain.on(Ipc.panelSize, (_event, payload) => {
+    if (!isRecord(payload) || typeof payload.width !== 'number' || typeof payload.height !== 'number') return
+    if (!Number.isFinite(payload.width) || !Number.isFinite(payload.height)) return
+    controller.resize(payload.width, payload.height)
+  })
+  ipcMain.on(Ipc.panelPin, () => controller.pinPopup())
+
   handle(Ipc.bootstrap, async () => ({ ok: true, bootstrap: await withStorage(controller, database) }))
   handle(Ipc.panelHide, () => {
     controller.hide()
     return { ok: true }
   })
   handle(Ipc.panelCurrent, () => controller.current())
+
   handle(Ipc.settingsOpen, () => {
     controller.openSettings()
     return { ok: true }
@@ -34,6 +43,14 @@ export function registerIpc(controller: AssistantController, database: AppDataba
   })
   handle(Ipc.secretClear, () => {
     controller.clearApiKey()
+    return { ok: true }
+  })
+  handle(Ipc.oddsSecretSet, (_event, payload) => {
+    if (!isRecord(payload) || typeof payload.apiKey !== 'string') throw new Error('Missing Odds API key.')
+    return { ok: true, ...controller.setOddsApiKey(payload.apiKey) }
+  })
+  handle(Ipc.oddsSecretClear, () => {
+    controller.clearOddsApiKey()
     return { ok: true }
   })
   handle(Ipc.copyText, async (_event, payload) => {
@@ -48,6 +65,12 @@ export function registerIpc(controller: AssistantController, database: AppDataba
     controller.cancel()
     return { ok: true }
   })
+  handle(Ipc.voiceTranscribe, (_event, payload) => {
+    if (!isRecord(payload) || typeof payload.audio !== 'string' || typeof payload.mimeType !== 'string') throw new Error('Missing audio.')
+    if (payload.audio.length === 0 || payload.audio.length > 8_000_000) throw new Error('The recording is too large. Keep voice prompts under 30 seconds.')
+    if (!['audio/webm', 'audio/ogg', 'audio/mp4'].includes(payload.mimeType)) throw new Error('Unsupported audio format.')
+    return controller.transcribe(payload.audio, payload.mimeType)
+  })
   handle(Ipc.actionApply, (_event, payload) => controller.apply(asApply(payload)))
   handle(Ipc.captureOcr, (_event, payload) => {
     if (!isRecord(payload) || typeof payload.conversationId !== 'string') throw new Error('Missing session.')
@@ -57,6 +80,19 @@ export function registerIpc(controller: AssistantController, database: AppDataba
   handle(Ipc.fetchPage, (_event, payload) => {
     if (!isRecord(payload) || typeof payload.conversationId !== 'string') throw new Error('Missing session.')
     return controller.fetchPage(payload.conversationId)
+  })
+  handle(Ipc.ghostRun, (_event, payload) => {
+    if (!isRecord(payload) || typeof payload.conversationId !== 'string' || typeof payload.query !== 'string') throw new Error('Missing question.')
+    const mode = payload.mode === 'ask' || payload.mode === 'auto' ? payload.mode : 'show'
+    return controller.ghost(payload.conversationId, payload.query, mode)
+  })
+  handle(Ipc.openLink, async (_event, payload) => {
+    // Only web links from search results; never file:, javascript: or custom schemes.
+    if (!isRecord(payload) || typeof payload.url !== 'string') throw new Error('Missing link.')
+    const url = new URL(payload.url)
+    if (url.protocol !== 'https:') throw new Error('Only https links can be opened.')
+    await shell.openExternal(url.toString())
+    return { ok: true }
   })
   handle(Ipc.historyList, () => controller.history())
   handle(Ipc.historyDelete, (_event, payload) => {
@@ -92,6 +128,8 @@ function asSettingsPatch(payload: unknown): Partial<SettingsData> {
   if (payload.theme === 'system' || payload.theme === 'light' || payload.theme === 'dark') patch.theme = payload.theme
   if (typeof payload.model === 'string') patch.model = payload.model
   if (typeof payload.shortcut === 'string') patch.shortcut = payload.shortcut
+  if (typeof payload.mouseTrigger === 'boolean') patch.mouseTrigger = payload.mouseTrigger
+  if (typeof payload.followPointer === 'boolean') patch.followPointer = payload.followPointer
   if (typeof payload.baseUrl === 'string') patch.baseUrl = payload.baseUrl
   if (isRecord(payload.integrations)) {
     patch.integrations = {

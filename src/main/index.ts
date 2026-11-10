@@ -20,10 +20,14 @@ import { ContextManager } from './services/ContextManager'
 import { ScreenshotService } from './services/ScreenshotService'
 import { OCRService } from './services/OCRService'
 import { AIService } from './services/AIService'
+import { SportsService } from './services/SportsService'
 import { DesktopWindowManager } from './services/DesktopWindowManager'
 import { GlobalShortcutManager } from './services/GlobalShortcutManager'
 import { ActionExecutionService } from './services/ActionExecutionService'
 import { AssistantController } from './services/AssistantController'
+import { MouseTriggerService } from './services/MouseTriggerService'
+import { GitWorkflowService } from './services/GitWorkflowService'
+import { ComputerAgent } from './services/ComputerAgent'
 
 if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals')
 app.setName('SmartCursor')
@@ -36,9 +40,11 @@ app.on('second-instance', () => {
   gateway.settings()
 })
 
-const gateway: { open: () => void; settings: () => void; windows: DesktopWindowManager | null } = {
+const gateway: { open: () => void; openAtPointer: () => void; settings: () => void; hidden: () => void; windows: DesktopWindowManager | null } = {
   open: () => undefined,
+  openAtPointer: () => undefined,
   settings: () => undefined,
+  hidden: () => undefined,
   windows: null
 }
 
@@ -46,6 +52,7 @@ app.whenReady().then(async () => {
   const database = await openDatabase(join(app.getPath('userData'), 'smartcursor.sqlite'))
   const settings = new SettingsManager(database)
   const secure = new SecureStore(join(app.getPath('userData'), 'api-key.bin'))
+  const oddsSecure = new SecureStore(join(app.getPath('userData'), 'odds-api-key.bin'))
   const conversations = new ConversationManager(database, settings)
   const sessions = new SessionStore()
   const bridge = new NativeBridge(process.platform === 'darwin' ? projectPath('native', 'macos', 'SmartCursorBridge') : null)
@@ -58,24 +65,37 @@ app.whenReady().then(async () => {
   const context = new ContextManager(detector, selection, chrome, vscode, settings)
   const screenshots = new ScreenshotService(settings)
   const ocr = new OCRService(bridge)
-  const ai = new AIService(secure, settings, conversations, sessions)
+  const scores = new SportsService(oddsSecure)
+  const ai = new AIService(secure, settings, conversations, sessions, scores)
   const windows = new DesktopWindowManager({
     openAssistant: () => gateway.open(),
-    openSettings: () => gateway.settings()
+    openSettings: () => gateway.settings(),
+    onFloatingHidden: () => gateway.hidden(),
+    shouldFollow: () => settings.get().followPointer
   })
   gateway.windows = windows
   const shortcuts = new GlobalShortcutManager(settings, () => gateway.open())
   const actions = new ActionExecutionService(bridge, chrome, vscode, windows)
+  const mouse = new MouseTriggerService(bridge, settings, () => gateway.openAtPointer())
+  const git = new GitWorkflowService(vscode)
+  const agent = new ComputerAgent(bridge, screenshots, ai, windows, git)
   const controller = new AssistantController(
-    windows, shortcuts, context, conversations, sessions, settings, secure,
-    permissions, integrations, ai, actions, screenshots, ocr, chrome
+    windows, shortcuts, context, conversations, sessions, settings, secure, scores,
+    permissions, integrations, ai, actions, screenshots, ocr, chrome, vscode, mouse, agent
   )
   gateway.open = () => void controller.open()
   gateway.settings = () => controller.openSettings()
+  gateway.hidden = () => controller.cancel()
+  // A Shift + right-click elsewhere moves the popup there instead of toggling it off.
+  gateway.openAtPointer = () => void controller.open({ toggle: false })
+  integrations.onOpenRequest((client, context) => {
+    void controller.open({ toggle: false, prefill: context ? { client, context } : undefined })
+  })
 
   windows.setTheme(settings.get().theme)
   windows.create()
   shortcuts.register()
+  mouse.sync()
   registerIpc(controller, database)
   integrations.onChange(() => windows.broadcast(Ipc.integrationsChanged, integrations.snapshot()))
   nativeTheme.on('updated', () => windows.broadcast(Ipc.themeChanged, windows.resolvedTheme()))
@@ -92,12 +112,25 @@ app.whenReady().then(async () => {
   app.on('will-quit', () => {
     globalShortcut.unregisterAll()
     integrations.stop()
+    mouse.stop()
     database.close()
     void ocr.dispose()
   })
 
-  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback) => {
-    callback(permission === 'clipboard-sanitized-write')
+  const trustedRenderer = (contents: Electron.WebContents) => {
+    const url = contents.getURL()
+    const devUrl = process.env.ELECTRON_RENDERER_URL
+    return url.startsWith('file://') || Boolean(devUrl && url.startsWith(devUrl))
+  }
+  // Microphone access is requested only after the user clicks the voice button in our own renderer.
+  // No external page can navigate into this session, and camera/display capture remains denied.
+  session.defaultSession.setPermissionCheckHandler((contents, permission) => {
+    return Boolean(contents && trustedRenderer(contents) && (permission === 'media' || permission === 'clipboard-sanitized-write'))
+  })
+  session.defaultSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const mediaTypes = permission === 'media' && 'mediaTypes' in details ? details.mediaTypes ?? [] : []
+    const audioOnly = mediaTypes.includes('audio') && !mediaTypes.includes('video')
+    callback(trustedRenderer(contents) && (permission === 'clipboard-sanitized-write' || (permission === 'media' && audioOnly)))
   })
   app.on('web-contents-created', (_event, contents) => {
     contents.on('console-message', (event) => {

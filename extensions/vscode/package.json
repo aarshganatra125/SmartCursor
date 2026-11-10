@@ -2,7 +2,7 @@
   "name": "smartcursor",
   "displayName": "SmartCursor",
   "description": "Sends the active editor selection to the SmartCursor desktop app and applies approved edits.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "publisher": "smartcursor",
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
@@ -11,9 +11,22 @@
   "contributes": {
     "commands": [
       {
+        "command": "smartcursor.open",
+        "title": "Ask SmartCursor",
+        "icon": "$(sparkle)"
+      },
+      {
         "command": "smartcursor.applyLast",
         "title": "SmartCursor: Apply Last Approved Edit"
       }
-    ]
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "smartcursor.open",
+          "group": "navigation@0"
+        }
+      ]
+    }
   }
 }

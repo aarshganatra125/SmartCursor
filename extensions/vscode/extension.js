@@ -1,8 +1,13 @@
 const vscode = require('vscode')
+const crypto = require('crypto')
 const fs = require('fs')
 const http = require('http')
 const os = require('os')
 const path = require('path')
+
+// Each VS Code window runs its own copy of this extension. The id and last-focus time let the
+// desktop app send requests to the window you were actually using.
+const INSTANCE = crypto.randomBytes(8).toString('hex')
 
 function bridgePath() {
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'SmartCursor', 'bridge.json')
@@ -20,9 +25,13 @@ function loadBridge() {
   }
 }
 
-function request(method, pathname, bridge, body) {
-  return new Promise((resolve, reject) => {
-    const req = http.request({
+let focusedAt = 0
+
+/** Returns { promise, cancel } so a long-poll can be dropped when this window regains focus. */
+function request(method, pathname, bridge, body, timeout = 25000) {
+  let req
+  const promise = new Promise((resolve, reject) => {
+    req = http.request({
       hostname: '127.0.0.1',
       port: bridge.port,
       path: pathname,
@@ -30,9 +39,11 @@ function request(method, pathname, bridge, body) {
       headers: {
         Authorization: `Bearer ${bridge.token}`,
         'Content-Type': 'application/json',
-        'X-SmartCursor-Client': 'vscode'
+        'X-SmartCursor-Client': 'vscode',
+        'X-SmartCursor-Instance': INSTANCE,
+        'X-SmartCursor-Focused-At': String(focusedAt)
       },
-      timeout: 25000
+      timeout
     }, (res) => {
       const chunks = []
       res.on('data', (chunk) => chunks.push(chunk))
@@ -49,22 +60,29 @@ function request(method, pathname, bridge, body) {
     if (body) req.write(JSON.stringify(body))
     req.end()
   })
+  return { promise, cancel: () => req?.destroy(new Error('cancelled')) }
 }
 
 function editorContext() {
   const editor = vscode.window.activeTextEditor
-  if (!editor) return { selection: '', fileName: '', languageId: '', surrounding: '', diagnostics: [] }
+  const fallbackWorkspace = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? ''
+  if (!editor) return { selection: '', fileName: '', workspaceFolder: fallbackWorkspace, languageId: '', surrounding: '', diagnostics: [] }
   const document = editor.document
+  const workspaceFolder = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath ?? fallbackWorkspace
   const start = Math.max(0, editor.selection.start.line - 40)
   const end = Math.min(document.lineCount - 1, editor.selection.end.line + 40)
-  const diagnostics = vscode.languages.getDiagnostics(document.uri).slice(0, 20).map((item) => ({
-    message: item.message,
-    severity: item.severity === 0 ? 'error' : item.severity === 1 ? 'warning' : 'info',
-    line: item.range.start.line + 1
-  }))
+  const diagnostics = vscode.languages.getDiagnostics(document.uri)
+    .filter((item) => item.severity <= vscode.DiagnosticSeverity.Warning)
+    .slice(0, 20)
+    .map((item) => ({
+      message: item.message,
+      severity: item.severity === vscode.DiagnosticSeverity.Error ? 'error' : 'warning',
+      line: item.range.start.line + 1
+    }))
   return {
     selection: document.getText(editor.selection),
     fileName: path.basename(document.fileName),
+    workspaceFolder,
     languageId: document.languageId,
     surrounding: document.getText(new vscode.Range(start, 0, end, document.lineAt(end).text.length)),
     diagnostics
@@ -73,7 +91,7 @@ function editorContext() {
 
 async function applyEdit(text) {
   const editor = vscode.window.activeTextEditor
-  if (!editor) return { ok: false, error: 'No editor is active.' }
+  if (!editor) return { ok: false, error: 'No editor is active in VS Code.' }
   const applied = await editor.edit((builder) => {
     if (editor.selection.isEmpty) builder.insert(editor.selection.active, text)
     else builder.replace(editor.selection, text)
@@ -81,35 +99,146 @@ async function applyEdit(text) {
   return applied ? { ok: true } : { ok: false, error: 'VS Code rejected the edit.' }
 }
 
+function activeWorkspaceFolder() {
+  const editor = vscode.window.activeTextEditor
+  return (editor && vscode.workspace.getWorkspaceFolder(editor.document.uri)?.uri.fsPath)
+    || vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+    || ''
+}
+
+function runTask(task) {
+  return new Promise(async (resolve) => {
+    let execution
+    const timer = setTimeout(() => {
+      disposable.dispose()
+      resolve({ ok: false, error: 'The VS Code Git task timed out.' })
+    }, 120000)
+    const disposable = vscode.tasks.onDidEndTaskProcess((event) => {
+      if (event.execution !== execution) return
+      clearTimeout(timer)
+      disposable.dispose()
+      resolve(event.exitCode === 0 ? { ok: true } : { ok: false, error: `Git task failed with exit code ${event.exitCode ?? 'unknown'}. Check the VS Code terminal.` })
+    })
+    try {
+      execution = await vscode.tasks.executeTask(task)
+    } catch (error) {
+      clearTimeout(timer)
+      disposable.dispose()
+      resolve({ ok: false, error: error instanceof Error ? error.message : 'VS Code could not start the Git task.' })
+    }
+  })
+}
+
+/** Run the two fixed Git commands in VS Code's visible integrated terminal. */
+async function commitAndPush(branch, message, workspaceFolder) {
+  if (!/^[A-Za-z0-9._/-]+$/.test(branch) || !message || message.length > 200) return { ok: false, error: 'Invalid Git branch or commit message.' }
+  const workspace = activeWorkspaceFolder()
+  if (!workspace || path.resolve(workspace) !== path.resolve(String(workspaceFolder || ''))) {
+    return { ok: false, error: 'VS Code is not focused on the verified repository workspace.' }
+  }
+  const run = async (name, args) => {
+    const task = new vscode.Task(
+      { type: 'smartcursor-git', task: name },
+      vscode.TaskScope.Workspace,
+      name,
+      'SmartCursor',
+      new vscode.ProcessExecution('git', args, { cwd: workspace }),
+      []
+    )
+    task.presentationOptions = { reveal: vscode.TaskRevealKind.Always, panel: vscode.TaskPanelKind.Shared, clear: false, showReuseMessage: false }
+    return runTask(task)
+  }
+  const committed = await run('SmartCursor: git commit', ['commit', '-m', message])
+  if (!committed.ok) return committed
+  return run('SmartCursor: git push', ['push', 'origin', branch])
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 function activate(context) {
   const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 50)
-  item.text = 'SmartCursor: offline'
+  item.command = 'smartcursor.open'
   item.show()
   let stopped = false
   let lastText = ''
+  let current = null
 
-  context.subscriptions.push(item, { dispose: () => { stopped = true } })
+  const setStatus = (state, detail) => {
+    const icon = state === 'connected' ? '$(sparkle)' : state === 'connecting' ? '$(sync~spin)' : '$(circle-slash)'
+    item.text = `${icon} SmartCursor`
+    item.tooltip = `${detail}\nClick to ask SmartCursor about the selection.`
+  }
+  setStatus('connecting', 'Looking for the SmartCursor desktop app…')
+
+  focusedAt = vscode.window.state.focused ? Date.now() : 0
+  context.subscriptions.push(vscode.window.onDidChangeWindowState((state) => {
+    if (!state.focused) return
+    focusedAt = Date.now()
+    // Re-poll right away so the desktop app learns this window is now the one in use.
+    current?.cancel()
+  }))
+
+  context.subscriptions.push(item, { dispose: () => { stopped = true; current?.cancel() } })
+
+  context.subscriptions.push(vscode.commands.registerCommand('smartcursor.open', async () => {
+    const bridge = loadBridge()
+    if (!bridge) {
+      void vscode.window.showWarningMessage('SmartCursor is not running. Start the desktop app first.')
+      return
+    }
+    focusedAt = Date.now()
+    try {
+      const response = await request('POST', '/v1/open?client=vscode', bridge, { context: editorContext() }, 4000).promise
+      if (response.status === 401) void vscode.window.showWarningMessage('SmartCursor rejected this window. Restart VS Code after rotating the token.')
+      else if (response.status === 403) void vscode.window.showWarningMessage('The VS Code integration is turned off in SmartCursor Settings.')
+      else if (response.status !== 200) void vscode.window.showWarningMessage('SmartCursor could not open.')
+    } catch {
+      void vscode.window.showWarningMessage('SmartCursor is not reachable. Is the desktop app running?')
+    }
+  }))
+
   context.subscriptions.push(vscode.commands.registerCommand('smartcursor.applyLast', async () => {
     if (!lastText) {
-      vscode.window.showInformationMessage('SmartCursor has no approved edit waiting.')
+      void vscode.window.showInformationMessage('SmartCursor has no approved edit waiting.')
       return
     }
     const result = await applyEdit(lastText)
-    if (!result.ok) vscode.window.showWarningMessage(result.error || 'Could not apply the edit.')
+    if (!result.ok) void vscode.window.showWarningMessage(result.error || 'Could not apply the edit.')
   }))
 
   const loop = async () => {
+    let failures = 0
     while (!stopped) {
       const bridge = loadBridge()
       if (!bridge) {
-        item.text = 'SmartCursor: desktop app not found'
-        await delay(2000)
+        setStatus('offline', 'The SmartCursor desktop app is not running.')
+        await delay(3000)
         continue
       }
       try {
-        const response = await request('GET', '/v1/actions?client=vscode', bridge)
-        if (response.status === 200) item.text = 'SmartCursor: connected'
-        else item.text = 'SmartCursor: rejected'
+        current = request('GET', '/v1/actions?client=vscode', bridge)
+        const response = await current.promise
+        current = null
+        if (response.status === 401) {
+          // Usually the token was rotated; bridge.json is re-read on the next attempt.
+          setStatus('offline', 'SmartCursor rejected the pairing token. Retrying…')
+          await delay(5000)
+          continue
+        }
+        if (response.status === 403) {
+          setStatus('offline', 'The VS Code integration is turned off in SmartCursor Settings.')
+          await delay(10000)
+          continue
+        }
+        if (response.status !== 200) {
+          setStatus('offline', `SmartCursor answered with ${response.status}.`)
+          await delay(3000)
+          continue
+        }
+        failures = 0
+        setStatus('connected', 'Connected to SmartCursor.')
         const action = response.body.action
         if (!action?.id) continue
         let result
@@ -117,20 +246,19 @@ function activate(context) {
         else if (action.type === 'apply-edit') {
           lastText = String(action.text ?? '')
           result = await applyEdit(lastText)
-          if (result.ok) void vscode.window.showInformationMessage('SmartCursor applied an approved edit.')
-        } else result = { ok: false, error: 'Unsupported action.' }
-        await request('POST', '/v1/result?client=vscode', bridge, { id: action.id, ...result })
-      } catch {
-        item.text = 'SmartCursor: offline'
-        await delay(2000)
+        } else if (action.type === 'git-commit-push') result = await commitAndPush(String(action.branch ?? ''), String(action.message ?? ''), String(action.workspaceFolder ?? ''))
+        else result = { ok: false, error: 'Unsupported action.' }
+        await request('POST', '/v1/result?client=vscode', bridge, { id: action.id, ...result }, 5000).promise
+      } catch (error) {
+        current = null
+        if (error instanceof Error && error.message === 'cancelled') continue
+        failures += 1
+        setStatus('offline', 'SmartCursor is not reachable.')
+        await delay(Math.min(1000 * 2 ** Math.min(failures, 3), 8000))
       }
     }
   }
   void loop()
-}
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function deactivate() {}
